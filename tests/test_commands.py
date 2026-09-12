@@ -251,10 +251,21 @@ def test_a_failed_health_check_returns_1_and_leaves_the_service_running(
     # Overrides the autouse _fake_health_check stub for this test only.
     monkeypatch.setattr("deploy.commands.wait_healthy", lambda *a, **k: False)
 
+    # The journal tail is for the operator to read right now, so it goes
+    # through subprocess.call directly rather than Runner (RealRunner would
+    # capture and discard it). Record its argv instead of running it for
+    # real.
+    calls = []
+    monkeypatch.setattr(
+        "deploy.commands.subprocess.call", lambda argv: calls.append(argv) or 0
+    )
+
     runner = RecordingRunner()
     assert install("pokemon", paths=paths, runner=runner, prompt=answer()) == 1
     assert not runner.ran("systemctl stop")
-    assert runner.ran("journalctl")
+    assert len(calls) == 1
+    assert "journalctl" in calls[0]
+    assert "-u" in calls[0] and "pokemon" in calls[0]
 
 
 def test_a_second_install_reuses_a_clone_already_renamed_to_the_app_name(tmp_path):

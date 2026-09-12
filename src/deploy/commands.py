@@ -142,9 +142,13 @@ def _deploy(
     health_path = config.service.health_path if config.service else None
     if not wait_healthy(port, health_path):
         print(f"{config.name}: FAILED health check on port {port}")
-        runner.run(
-            ["journalctl", "-u", config.name, "-n", "20", "--no-pager"], check=False
-        )
+        # journalctl's output is for the operator to read right now, not for
+        # this tool to consume -- going through Runner would capture it
+        # (RealRunner sets capture_output=True) and throw it away, leaving
+        # "FAILED health check" on screen with no diagnostics after it. Use
+        # subprocess.call directly, as logs() does, so the lines reach the
+        # terminal. The service is deliberately left running either way.
+        subprocess.call(["journalctl", "-u", config.name, "-n", "20", "--no-pager"])
         return 1
 
     print(f"{config.name}: healthy on port {port}")
@@ -370,7 +374,7 @@ def logs(name: str, *, follow: bool) -> int:
         argv.append("-f")
     else:
         argv.append("--no-pager")
-    return subprocess.call(argv)
+    return subprocess.call(argv)  # not runner.run: output is for the user, not the tool
 
 
 def remove(
