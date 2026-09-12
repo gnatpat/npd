@@ -3,9 +3,9 @@ import subprocess
 
 import pytest
 
-from deploy.commands import install, update
-from deploy.paths import MANAGED_HEADER, Paths
-from deploy.runner import RecordingRunner
+from npd.commands import install, update
+from npd.paths import MANAGED_HEADER, Paths
+from npd.runner import RecordingRunner
 
 POKEMON_TOML = """
 [app]
@@ -37,7 +37,7 @@ def make_repo(paths: Paths, name: str, toml: str, *, static: bool = False):
     """A pre-existing clone, which is what migration produces."""
     repo = paths.clone_dir(name)
     (repo / "server").mkdir(parents=True, exist_ok=True)
-    (repo / "deploy.toml").write_text(toml)
+    (repo / "npd.toml").write_text(toml)
     if static:
         out = repo / "static"
         out.mkdir(exist_ok=True)
@@ -66,7 +66,7 @@ def _fake_health_check(monkeypatch):
     times every install/update call in this file) or make an `install(...)
     == 0` assertion fail outright once the timeout elapses. Patch it to
     succeed immediately so these tests verify orchestration, not networking."""
-    monkeypatch.setattr("deploy.commands.wait_healthy", lambda *a, **k: True)
+    monkeypatch.setattr("npd.commands.wait_healthy", lambda *a, **k: True)
 
 
 def test_install_writes_unit_and_nginx(tmp_path):
@@ -188,7 +188,7 @@ def test_build_steps_stream_to_the_terminal_instead_of_going_through_runner(
 
     calls = []
     monkeypatch.setattr(
-        "deploy.commands.subprocess.call",
+        "npd.commands.subprocess.call",
         lambda argv, **kw: calls.append(argv) or 0,
     )
     runner = RecordingRunner()
@@ -248,7 +248,7 @@ def test_update_with_no_changes_reports_up_to_date_and_does_not_restart(tmp_path
 
 
 def test_update_with_the_same_commit_still_reports_up_to_date(tmp_path):
-    """Pins CRITICAL 2's idempotence requirement: stamping DEPLOY_COMMIT
+    """Pins CRITICAL 2's idempotence requirement: stamping NPD_COMMIT
     into the unit must not turn every update into "something changed" —
     only a genuine commit change should. Uses a real-looking, non-empty sha
     (RecordingRunner's unconfigured default is "", which is falsy and would
@@ -263,7 +263,7 @@ def test_update_with_the_same_commit_still_reports_up_to_date(tmp_path):
         prompt=answer(),
     )
     before = paths.systemd_unit_file("pokemon").read_text()
-    assert f"DEPLOY_COMMIT={sha}" in before
+    assert f"NPD_COMMIT={sha}" in before
 
     runner = RecordingRunner(stdout={"rev-parse": f"{sha}\n"})
     assert update("pokemon", paths=paths, runner=runner, prompt=answer()) == 0
@@ -306,11 +306,11 @@ def test_a_failed_build_followed_by_a_clean_update_redeploys(tmp_path):
         runner=RecordingRunner(stdout={"rev-parse": "sha1\n"}),
         prompt=answer(),
     )
-    assert "DEPLOY_COMMIT=sha1" in paths.systemd_unit_file("pokemon").read_text()
+    assert "NPD_COMMIT=sha1" in paths.systemd_unit_file("pokemon").read_text()
 
     # Simulate: new commits land (HEAD moves from sha1 to sha2) and the
     # build then fails.
-    (repo / "deploy.toml").write_text(POKEMON_TOML + '\n[build]\nsteps = ["false"]\n')
+    (repo / "npd.toml").write_text(POKEMON_TOML + '\n[build]\nsteps = ["false"]\n')
     with pytest.raises(subprocess.CalledProcessError):
         update(
             "pokemon",
@@ -319,15 +319,15 @@ def test_a_failed_build_followed_by_a_clean_update_redeploys(tmp_path):
             prompt=answer(),
         )
     # Nothing was deployed: the unit on disk still says sha1.
-    assert "DEPLOY_COMMIT=sha1" in paths.systemd_unit_file("pokemon").read_text()
+    assert "NPD_COMMIT=sha1" in paths.systemd_unit_file("pokemon").read_text()
 
     # Fix the build and retry. pull_ff_only now finds nothing new (HEAD is
     # already sha2 and stays there) -- but the commit stamped on disk (sha1)
     # still disagrees with HEAD (sha2), so this must redeploy.
-    (repo / "deploy.toml").write_text(POKEMON_TOML)
+    (repo / "npd.toml").write_text(POKEMON_TOML)
     runner = RecordingRunner(stdout={"rev-parse": "sha2\n"})
     assert update("pokemon", paths=paths, runner=runner, prompt=answer()) == 0
-    assert "DEPLOY_COMMIT=sha2" in paths.systemd_unit_file("pokemon").read_text()
+    assert "NPD_COMMIT=sha2" in paths.systemd_unit_file("pokemon").read_text()
     assert runner.ran("systemctl restart")
 
 
@@ -342,7 +342,7 @@ def test_update_prompts_only_for_newly_declared_secrets(tmp_path):
         asked.append(name)
         return "second"
 
-    (repo / "deploy.toml").write_text(POKEMON_TOML + '\nNEW_SECRET = "another"\n')
+    (repo / "npd.toml").write_text(POKEMON_TOML + '\nNEW_SECRET = "another"\n')
     update("pokemon", paths=paths, runner=RecordingRunner(), prompt=record)
     assert asked == ["NEW_SECRET"]
     assert "COLLECTION_PASSWORD=first" in paths.env_file("pokemon").read_text()
@@ -367,14 +367,14 @@ class MovingRunner(RecordingRunner):
         return super().run(argv, cwd=cwd, env=env, check=check)
 
 
-_COMMIT_LINE = re.compile(r'Environment="DEPLOY_COMMIT=[^"]+"\n')
+_COMMIT_LINE = re.compile(r'Environment="NPD_COMMIT=[^"]+"\n')
 
 
 def test_new_commits_restart_and_update_the_stamped_commit(tmp_path):
     """New commits must still force a restart even when nothing in
-    deploy.toml changed -- the running process is executing the old code
+    npd.toml changed -- the running process is executing the old code
     until it is restarted. Under the CRITICAL 2 fix the unit is no longer
-    byte-identical in this case (its DEPLOY_COMMIT stamp moves forward,
+    byte-identical in this case (its NPD_COMMIT stamp moves forward,
     which is exactly the mechanism that fix relies on to detect a stale
     deploy later), so this pins "unchanged except for the commit stamp"
     rather than "byte-identical", which is what this test used to assert
@@ -399,7 +399,7 @@ def test_a_foreign_unit_is_never_clobbered(tmp_path):
     make_repo(paths, "pokemon", POKEMON_TOML)
     paths.units.mkdir(parents=True, exist_ok=True)
     paths.systemd_unit_file("pokemon").write_text("[Service]\nExecStart=/hand/written\n")
-    from deploy.reconcile import ForeignFile
+    from npd.reconcile import ForeignFile
 
     with pytest.raises(ForeignFile):
         install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
@@ -412,12 +412,12 @@ def test_a_failed_health_check_returns_1_and_leaves_the_service_running(
     """This is the branch an operator actually hits on a bad deploy: the
     unit was linked/enabled/started but the app never came up healthy. It
     must be reported (exit 1, journal tailed) without stopping the service —
-    Restart=always means systemd will keep retrying, and deploy must not
+    Restart=always means systemd will keep retrying, and npd must not
     make a bad deploy worse by tearing down what's there."""
     paths = Paths.under(tmp_path)
     make_repo(paths, "pokemon", POKEMON_TOML)
     # Overrides the autouse _fake_health_check stub for this test only.
-    monkeypatch.setattr("deploy.commands.wait_healthy", lambda *a, **k: False)
+    monkeypatch.setattr("npd.commands.wait_healthy", lambda *a, **k: False)
 
     # The journal tail is for the operator to read right now, so it goes
     # through subprocess.call directly rather than Runner (RealRunner would
@@ -425,7 +425,7 @@ def test_a_failed_health_check_returns_1_and_leaves_the_service_running(
     # real.
     calls = []
     monkeypatch.setattr(
-        "deploy.commands.subprocess.call", lambda argv: calls.append(argv) or 0
+        "npd.commands.subprocess.call", lambda argv: calls.append(argv) or 0
     )
 
     runner = RecordingRunner()
@@ -440,9 +440,9 @@ def test_a_second_install_reuses_a_clone_already_renamed_to_the_app_name(tmp_pat
     """boggle's repo is boggle-solver but its [app] name is boggle: the
     first install clones into ~/apps/boggle-solver then renames it to
     ~/apps/boggle. A second install must find that clone by its remote
-    instead of cloning a fresh, orphaned ~/apps/boggle-solver — deploy never
+    instead of cloning a fresh, orphaned ~/apps/boggle-solver — npd never
     deletes a clone, so a duplicate would sit there forever."""
-    from deploy.gitrepo import repo_url as compute_repo_url
+    from npd.gitrepo import repo_url as compute_repo_url
 
     paths = Paths.under(tmp_path)
     make_repo(paths, "boggle-solver", STATIC_TOML, static=True)
@@ -465,7 +465,7 @@ def test_existing_clone_matches_an_https_origin_against_an_ssh_url(tmp_path):
     manual migration) must still be recognised as the same repo as the ssh
     URL this tool generates -- otherwise install clones a duplicate that
     the rename guard then refuses, leaving an orphan."""
-    from deploy.commands import _existing_clone
+    from npd.commands import _existing_clone
 
     paths = Paths.under(tmp_path)
     repo = paths.clone_dir("boggle-solver")
@@ -484,7 +484,7 @@ def test_existing_clone_matches_an_https_origin_against_an_ssh_url(tmp_path):
 def test_existing_clone_skips_a_directory_with_no_origin_remote(tmp_path):
     """IMPORTANT 6. A git repo under ~/apps with no `origin` configured must
     not abort install for an unrelated reason -- it is simply not a match."""
-    from deploy.commands import _existing_clone
+    from npd.commands import _existing_clone
 
     paths = Paths.under(tmp_path)
     repo = paths.clone_dir("no-origin")
@@ -503,7 +503,7 @@ def test_remove_of_a_never_installed_app_reports_nothing_and_exits_nonzero(
 ):
     """MINOR 7. A typo'd app name must be visible, not silently reported as
     "removed" with exit 0."""
-    from deploy.commands import remove
+    from npd.commands import remove
 
     paths = Paths.under(tmp_path)
     assert remove(
@@ -514,10 +514,10 @@ def test_remove_of_a_never_installed_app_reports_nothing_and_exits_nonzero(
 
 def test_purge_of_a_static_app_deletes_the_published_build_output(tmp_path):
     """MINOR 7. --purge of a static app must also clean up
-    /var/www/deploy/<name> (the live symlink) and its versioned build
+    /var/www/npd/<name> (the live symlink) and its versioned build
     directories -- otherwise they are left behind forever, since nothing
     else garbage-collects them."""
-    from deploy.commands import remove
+    from npd.commands import remove
 
     paths = Paths.under(tmp_path)
     make_repo(paths, "boggle", STATIC_TOML, static=True)

@@ -1,7 +1,7 @@
 import pytest
 
-from deploy.paths import Paths
-from deploy.static import live_target, publish, published_paths
+from npd.paths import Paths
+from npd.static import live_target, publish, published_paths
 
 
 def build(tmp_path, content: str):

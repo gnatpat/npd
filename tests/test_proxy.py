@@ -1,5 +1,5 @@
-from deploy.config import NginxConfig
-from deploy.proxy import Forward, NotFound, Redirect, forwarded_headers, route_request
+from npd.config import NginxConfig
+from npd.proxy import Forward, NotFound, Redirect, forwarded_headers, route_request
 
 
 def test_bare_route_redirects_to_the_trailing_slash():
@@ -61,7 +61,7 @@ import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from deploy.proxy import serve
+from npd.proxy import serve
 
 
 class Echo(BaseHTTPRequestHandler):
@@ -92,7 +92,7 @@ def test_end_to_end_forwards_path_and_headers():
 
     nginx = NginxConfig(path="/pokemon/", strip_prefix=False)
     proxy = ThreadingHTTPServer(
-        ("127.0.0.1", 0), __import__("deploy.proxy", fromlist=["_handler"])._handler(
+        ("127.0.0.1", 0), __import__("npd.proxy", fromlist=["_handler"])._handler(
             nginx, upstream_port
         )
     )
@@ -117,7 +117,7 @@ def test_end_to_end_strips_the_prefix_when_configured():
 
     nginx = NginxConfig(path="/crochet/", strip_prefix=True)
     proxy = ThreadingHTTPServer(
-        ("127.0.0.1", 0), __import__("deploy.proxy", fromlist=["_handler"])._handler(
+        ("127.0.0.1", 0), __import__("npd.proxy", fromlist=["_handler"])._handler(
             nginx, upstream_port
         )
     )
@@ -138,7 +138,7 @@ def test_end_to_end_strips_the_prefix_when_configured():
 
 import socket
 
-from deploy.proxy import _handler
+from npd.proxy import _handler
 
 
 def _raw_request(port: int, request: bytes) -> bytes:

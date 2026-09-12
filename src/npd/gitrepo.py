@@ -1,14 +1,14 @@
 import os
 from pathlib import Path
 
-from deploy.paths import app_name_error
-from deploy.runner import Runner
+from npd.paths import app_name_error
+from npd.runner import Runner
 
-GITHUB_USER = os.environ.get("DEPLOY_GITHUB_USER", "gnatpat")
+GITHUB_USER = os.environ.get("NPD_GITHUB_USER", "gnatpat")
 
 
 class DirtyRepo(Exception):
-    """The working tree has local changes; deploy will not touch it."""
+    """The working tree has local changes; npd will not touch it."""
 
 
 def repo_url(name_or_url: str) -> str:

@@ -3,7 +3,7 @@ import re
 import shutil
 from pathlib import Path
 
-from deploy.paths import Paths
+from npd.paths import Paths
 
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]+$")
 

@@ -1,15 +1,15 @@
 import pytest
 
-from deploy.config import parse_config
-from deploy.paths import Paths
-from deploy.ports import PortExhausted, allocate_port, ports_in_use
-from deploy.render import render_systemd_unit
+from npd.config import parse_config
+from npd.paths import Paths
+from npd.ports import PortExhausted, allocate_port, ports_in_use
+from npd.render import render_systemd_unit
 
 
 def write_unit(paths: Paths, name: str, port: int) -> None:
     paths.units.mkdir(parents=True, exist_ok=True)
     paths.systemd_unit_file(name).write_text(
-        "# Managed by deploy — edits will be overwritten\n"
+        "# Managed by npd — edits will be overwritten\n"
         "[Service]\n"
         f"Environment=PORT={port}\n"
     )
@@ -80,17 +80,17 @@ def test_exhausted_range_raises(tmp_path):
         allocate_port(paths, name="new")
 
 
-def test_ports_in_use_is_unconfused_by_a_deploy_commit_line(tmp_path):
-    """CRITICAL 2 adds a second Environment= line (DEPLOY_COMMIT) right
+def test_ports_in_use_is_unconfused_by_an_npd_commit_line(tmp_path):
+    """CRITICAL 2 adds a second Environment= line (NPD_COMMIT) right
     after PORT's. Confirm _PORT_LINE still matches only the PORT line and
     is not thrown off by it being followed by another Environment= line."""
     paths = Paths.under(tmp_path)
     paths.units.mkdir(parents=True, exist_ok=True)
     paths.systemd_unit_file("pokemon").write_text(
-        "# Managed by deploy — edits will be overwritten\n"
+        "# Managed by npd — edits will be overwritten\n"
         "[Service]\n"
         'Environment="PORT=8151"\n'
-        'Environment="DEPLOY_COMMIT=abcabcabcabcabcabcabcabcabcabcabcabcabca"\n'
+        'Environment="NPD_COMMIT=abcabcabcabcabcabcabcabcabcabcabcabcabca"\n'
     )
     assert ports_in_use(paths) == {"pokemon": 8151}
 

@@ -3,7 +3,7 @@ import tomllib
 from dataclasses import dataclass, field
 from typing import Any
 
-from deploy.paths import app_name_error
+from npd.paths import app_name_error
 
 VALID_TYPES = ("service", "static")
 NGINX_PATH_PATTERN = re.compile(r"^[A-Za-z0-9/_.~-]+$")
@@ -32,18 +32,18 @@ def _has_invalid_chars(value: str) -> str | None:
 
 def _check_reserved_names(env: dict[str, str], secrets: dict[str, str]) -> None:
     """Reject PORT/PATH in either [env] or [secrets]: PORT is assigned by
-    deploy and PATH is set explicitly in the generated unit, so an app
+    npd and PATH is set explicitly in the generated unit, so an app
     declaring either would silently fight the generated values."""
     for key in env:
         if key in RESERVED_ENV_KEYS:
             raise ConfigError(
-                f"{key!r} may not be set in [env]; PORT is assigned by deploy "
+                f"{key!r} may not be set in [env]; PORT is assigned by npd "
                 "and PATH is set explicitly in the generated unit"
             )
     for key in secrets:
         if key in RESERVED_ENV_KEYS:
             raise ConfigError(
-                f"{key!r} may not be set in [secrets]; PORT is assigned by deploy "
+                f"{key!r} may not be set in [secrets]; PORT is assigned by npd "
                 "and PATH is set explicitly in the generated unit"
             )
 
@@ -62,7 +62,7 @@ def _check_value_characters(table: dict[str, str], table_name: str) -> None:
 
 
 class ConfigError(Exception):
-    """A deploy.toml that cannot be used. The message is shown to the user."""
+    """A npd.toml that cannot be used. The message is shown to the user."""
 
 
 def _table(raw: dict[str, Any], key: str) -> dict[str, Any]:
@@ -129,7 +129,7 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
     try:
         raw: dict[str, Any] = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"deploy.toml is not valid TOML: {exc}") from exc
+        raise ConfigError(f"npd.toml is not valid TOML: {exc}") from exc
 
     app = _table(raw, "app")
     app_type = app.get("type", "service")

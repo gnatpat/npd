@@ -2,7 +2,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-MANAGED_HEADER = "# Managed by deploy — edits will be overwritten"
+MANAGED_HEADER = "# Managed by npd — edits will be overwritten"
 
 _SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -10,7 +10,7 @@ _SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 def app_name_error(name: str, what: str = "app name") -> str | None:
     """Why `name` is unsafe as a single path segment, or None if it is fine.
     Returns a message rather than raising so each caller can use its own
-    exception type: ConfigError for a bad deploy.toml, ValueError for a bad
+    exception type: ConfigError for a bad npd.toml, ValueError for a bad
     command-line argument.
 
     This is the one place that knows what makes a name safe to concatenate
@@ -79,20 +79,20 @@ class Paths:
     def default(cls) -> "Paths":
         return cls(
             apps=Path.home() / "apps",
-            env=Path("/etc/deploy/env"),
-            units=Path("/etc/deploy/systemd"),
-            nginx=Path("/etc/nginx/deploy.d"),
-            static=Path("/var/www/deploy"),
+            env=Path("/etc/npd/env"),
+            units=Path("/etc/npd/systemd"),
+            nginx=Path("/etc/nginx/npd.d"),
+            static=Path("/var/www/npd"),
         )
 
     @classmethod
     def under(cls, root: Path) -> "Paths":
         return cls(
             apps=root / "apps",
-            env=root / "etc/deploy/env",
-            units=root / "etc/deploy/systemd",
-            nginx=root / "etc/nginx/deploy.d",
-            static=root / "var/www/deploy",
+            env=root / "etc/npd/env",
+            units=root / "etc/npd/systemd",
+            nginx=root / "etc/nginx/npd.d",
+            static=root / "var/www/npd",
         )
 
     def systemd_unit_file(self, name: str) -> Path:

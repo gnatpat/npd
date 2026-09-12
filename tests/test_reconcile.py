@@ -2,14 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from deploy.paths import (
+from npd.paths import (
     ARTIFACT_KINDS,
     MANAGED_HEADER,
     NGINX_SNIPPET,
     SYSTEMD_UNIT,
     Paths,
 )
-from deploy.reconcile import (
+from npd.reconcile import (
     ForeignFile,
     NginxTestFailed,
     OwnedArtifact,
@@ -19,8 +19,8 @@ from deploy.reconcile import (
     plan_app_changes,
     plan_changes,
 )
-from deploy.render import Artifact
-from deploy.runner import RecordingRunner
+from npd.render import Artifact
+from npd.runner import RecordingRunner
 
 UNIT = MANAGED_HEADER + "\n[Service]\nEnvironment=PORT=8200\n"
 CONF = MANAGED_HEADER + "\nlocation /x/ { proxy_pass http://127.0.0.1:8200/; }\n"
@@ -145,8 +145,8 @@ def test_a_file_without_the_managed_header_is_never_overwritten(tmp_path):
         plan_changes(desired(paths))
     assert str(excinfo.value) == (
         f"{paths.systemd_unit_file('x')} is an existing systemd unit that "
-        "deploy did not generate (no managed header); move it aside if you "
-        "want deploy to own it"
+        "npd did not generate (no managed header); move it aside if you "
+        "want npd to own it"
     )
 
 
@@ -356,8 +356,8 @@ def test_a_write_failure_mid_loop_rolls_back_the_writes_already_made(tmp_path):
     changed = with_contents(
         changed, paths.nginx_snippet_file("x"), CONF.replace("8200", "8201")
     )
-    # plan_changes sorts by path, and .../etc/deploy/systemd/... sorts before
-    # .../etc/nginx/deploy.d/..., so the unit write is applied first and
+    # plan_changes sorts by path, and .../etc/npd/systemd/... sorts before
+    # .../etc/nginx/npd.d/..., so the unit write is applied first and
     # should succeed; then the nginx write must fail and force a rollback of
     # the already-applied unit write. Force that failure in a way that is
     # not just permission bits (which root would bypass): replace the nginx
@@ -381,8 +381,8 @@ def test_removal_of_a_file_without_the_managed_header_is_refused(tmp_path):
         )
     assert str(excinfo.value) == (
         f"{paths.systemd_unit_file('x')} is an existing systemd unit that "
-        "deploy did not generate (no managed header); move it aside if you "
-        "want deploy to own it"
+        "npd did not generate (no managed header); move it aside if you "
+        "want npd to own it"
     )
 
 

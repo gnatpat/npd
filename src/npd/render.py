@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from deploy.config import AppConfig, NginxConfig
-from deploy.paths import ArtifactKind, MANAGED_HEADER, NGINX_SNIPPET, Paths, SYSTEMD_UNIT
+from npd.config import AppConfig, NginxConfig
+from npd.paths import ArtifactKind, MANAGED_HEADER, NGINX_SNIPPET, Paths, SYSTEMD_UNIT
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,7 @@ UNIT_PATH = "/home/nathan/.local/bin:/usr/local/bin:/usr/bin:/bin"
 _UNIT_TEMPLATE = (
     "{header}\n"
     "[Unit]\n"
-    "Description={name} (managed by deploy)\n"
+    "Description={name} (managed by npd)\n"
     "After=network.target\n"
     "StartLimitIntervalSec=0\n"
     "\n"
@@ -104,7 +104,7 @@ def render_systemd_unit(
 ) -> str:
     """The systemd unit for one service. Pure: no IO, no subprocess.
 
-    `commit` (when given) is stamped in as DEPLOY_COMMIT, right after PORT.
+    `commit` (when given) is stamped in as NPD_COMMIT, right after PORT.
     There is no state file recording what the running process was built
     from, so the unit itself is the only place that can carry it — without
     it, a build that fails after a `git pull` leaves no way to tell that the
@@ -119,7 +119,7 @@ def render_systemd_unit(
     if config.service.workdir:
         workdir = workdir / config.service.workdir
 
-    commit_line = f'Environment="DEPLOY_COMMIT={commit}"\n' if commit else ""
+    commit_line = f'Environment="NPD_COMMIT={commit}"\n' if commit else ""
 
     env_lines = "".join(
         f'Environment="{key}={_escape_unit_percent(config.env[key])}"\n'

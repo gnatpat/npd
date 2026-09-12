@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from deploy.paths import (
+from npd.paths import (
     ARTIFACT_KINDS,
     MANAGED_HEADER,
     NGINX_SNIPPET,
@@ -14,8 +14,8 @@ from deploy.paths import (
     ArtifactKind,
     Paths,
 )
-from deploy.render import Artifact
-from deploy.runner import Runner
+from npd.render import Artifact
+from npd.runner import Runner
 
 SYSTEMCTL = "/usr/bin/systemctl"
 
@@ -90,9 +90,9 @@ def plan_changes(
         before = path.read_text() if path.exists() else None
         if before is not None and not before.startswith(MANAGED_HEADER):
             raise ForeignFile(
-                f"{path} is an existing {kind.label} that deploy did not "
+                f"{path} is an existing {kind.label} that npd did not "
                 "generate (no managed header); move it aside if you want "
-                "deploy to own it"
+                "npd to own it"
             )
         if before != after:
             changes.append(Change(path, before, after, kind))
@@ -102,9 +102,9 @@ def plan_changes(
             before = path.read_text()
             if not before.startswith(MANAGED_HEADER):
                 raise ForeignFile(
-                    f"{path} is an existing {kind.label} that deploy did not "
+                    f"{path} is an existing {kind.label} that npd did not "
                     "generate (no managed header); move it aside if you want "
-                    "deploy to own it"
+                    "npd to own it"
                 )
             changes.append(Change(path, before, None, kind))
     return changes

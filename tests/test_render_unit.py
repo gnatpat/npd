@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from deploy.config import parse_config
-from deploy.paths import MANAGED_HEADER, NGINX_SNIPPET, SYSTEMD_UNIT, Paths
-from deploy.render import render, render_systemd_unit
+from npd.config import parse_config
+from npd.paths import MANAGED_HEADER, NGINX_SNIPPET, SYSTEMD_UNIT, Paths
+from npd.render import render, render_systemd_unit
 
 PATHS = Paths.under(Path("/srv/test"))
 
@@ -59,7 +59,7 @@ def test_non_secret_env_becomes_environment_lines():
 
 
 def test_secrets_come_from_an_environment_file():
-    assert "EnvironmentFile=/srv/test/etc/deploy/env/pokemon.env\n" in unit()
+    assert "EnvironmentFile=/srv/test/etc/npd/env/pokemon.env\n" in unit()
 
 
 def test_no_environment_file_when_no_secrets_are_declared():
@@ -88,8 +88,8 @@ def test_restart_policy_is_always_with_one_second_backoff():
 def test_render_produces_unit_and_nginx_for_a_service():
     artifacts = render(parse_config(POKEMON, repo_name="pokemon"), 8151, PATHS)
     assert {(a.kind, a.path) for a in artifacts} == {
-        (SYSTEMD_UNIT, Path("/srv/test/etc/deploy/systemd/pokemon.service")),
-        (NGINX_SNIPPET, Path("/srv/test/etc/nginx/deploy.d/pokemon.conf")),
+        (SYSTEMD_UNIT, Path("/srv/test/etc/npd/systemd/pokemon.service")),
+        (NGINX_SNIPPET, Path("/srv/test/etc/nginx/npd.d/pokemon.conf")),
     }
 
 
@@ -97,7 +97,7 @@ def test_render_produces_only_a_unit_for_an_internal_service():
     cfg = parse_config('[service]\nstart = "run"\n', repo_name="internal")
     artifacts = render(cfg, 8201, PATHS)
     assert {a.path for a in artifacts} == {
-        Path("/srv/test/etc/deploy/systemd/internal.service")
+        Path("/srv/test/etc/npd/systemd/internal.service")
     }
     assert {a.kind for a in artifacts} == {SYSTEMD_UNIT}
 
@@ -110,7 +110,7 @@ def test_render_produces_only_nginx_for_a_static_app():
     )
     artifacts = render(cfg, None, PATHS)
     assert {a.path for a in artifacts} == {
-        Path("/srv/test/etc/nginx/deploy.d/boggle.conf")
+        Path("/srv/test/etc/nginx/npd.d/boggle.conf")
     }
     assert {a.kind for a in artifacts} == {NGINX_SNIPPET}
 
@@ -150,25 +150,25 @@ def test_percent_in_start_command_is_escaped_for_systemd():
 
 def test_commit_is_stamped_right_after_port_when_given():
     out = unit()  # unit()'s default port=8151, no commit passed -> None
-    assert "DEPLOY_COMMIT" not in out
+    assert "NPD_COMMIT" not in out
     out = render_systemd_unit(
         parse_config(POKEMON, repo_name="pokemon"), 8151, PATHS, commit="a" * 40
     )
-    assert f'Environment="PORT=8151"\nEnvironment="DEPLOY_COMMIT={"a" * 40}"\n' in out
+    assert f'Environment="PORT=8151"\nEnvironment="NPD_COMMIT={"a" * 40}"\n' in out
 
 
 def test_no_commit_line_when_commit_is_none_or_empty():
     out = render_systemd_unit(
         parse_config(POKEMON, repo_name="pokemon"), 8151, PATHS, commit=None
     )
-    assert "DEPLOY_COMMIT" not in out
+    assert "NPD_COMMIT" not in out
     out = render_systemd_unit(
         parse_config(POKEMON, repo_name="pokemon"), 8151, PATHS, commit=""
     )
-    assert "DEPLOY_COMMIT" not in out
+    assert "NPD_COMMIT" not in out
 
 
 def test_render_forwards_commit_into_the_unit():
     artifacts = render(parse_config(POKEMON, repo_name="pokemon"), 8151, PATHS, "b" * 40)
     (unit_artifact,) = [a for a in artifacts if a.kind is SYSTEMD_UNIT]
-    assert f'DEPLOY_COMMIT={"b" * 40}' in unit_artifact.contents
+    assert f'NPD_COMMIT={"b" * 40}' in unit_artifact.contents

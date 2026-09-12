@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from deploy.gitrepo import (
+from npd.gitrepo import (
     DirtyRepo,
     clone,
     head_commit,
@@ -11,7 +11,7 @@ from deploy.gitrepo import (
     remote_url,
     repo_url,
 )
-from deploy.runner import RealRunner
+from npd.runner import RealRunner
 
 RUNNER = RealRunner()
 

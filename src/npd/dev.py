@@ -5,10 +5,10 @@ import sys
 import threading
 from pathlib import Path
 
-from deploy.config import AppConfig
-from deploy.proxy import serve
-from deploy.runner import Runner
-from deploy.secrets import missing_secrets, read_env_file
+from npd.config import AppConfig
+from npd.proxy import serve
+from npd.runner import Runner
+from npd.secrets import missing_secrets, read_env_file
 
 DEFAULT_DEV_PORT = 8000
 
@@ -26,7 +26,7 @@ class MissingSecrets(Exception):
 def resolve_env(
     config: AppConfig, dotenv: dict[str, str], *, port: int
 ) -> dict[str, str]:
-    """The environment `deploy dev` runs the app with. Fails up front when a
+    """The environment `npd dev` runs the app with. Fails up front when a
     declared secret has no value, rather than letting the app die confusingly."""
     absent = missing_secrets(config.secrets, dotenv)
     if absent:
@@ -76,7 +76,7 @@ def run_dev(
             # terminal silent until a bare failure. Use subprocess.call
             # directly, as commands._run_build does for the same reason,
             # and raise CalledProcessError ourselves so a failed build step
-            # still stops `deploy dev --build` instead of continuing on to
+            # still stops `npd dev --build` instead of continuing on to
             # run the app against a half-built tree.
             returncode = subprocess.call(shlex.split(step), cwd=workdir, env=env)
             if returncode != 0:

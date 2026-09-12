@@ -1,7 +1,7 @@
 import re
 import sys
 
-from deploy.paths import SYSTEMD_UNIT, Paths
+from npd.paths import SYSTEMD_UNIT, Paths
 
 PORT_RANGE = range(8200, 8300)
 _PORT_LINE = re.compile(r'Environment="?PORT=(\d+)"?', re.MULTILINE)

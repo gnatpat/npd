@@ -2,10 +2,10 @@ import subprocess
 
 import pytest
 
-from deploy.cli import build_parser
-from deploy.commands import diff, install, list_apps, remove
-from deploy.paths import Paths
-from deploy.runner import RecordingRunner
+from npd.cli import build_parser
+from npd.commands import diff, install, list_apps, remove
+from npd.paths import Paths
+from npd.runner import RecordingRunner
 from tests.test_commands import POKEMON_TOML, answer, make_repo
 
 
@@ -17,7 +17,7 @@ def _fake_health_check(monkeypatch):
     lives in a different module. Without this, install() below would burn
     wait_healthy's full 15s timeout against a RecordingRunner that never
     actually starts a listening process."""
-    monkeypatch.setattr("deploy.commands.wait_healthy", lambda *a, **k: True)
+    monkeypatch.setattr("npd.commands.wait_healthy", lambda *a, **k: True)
 
 
 def test_parser_accepts_every_documented_command():
@@ -143,18 +143,18 @@ def test_purge_deletes_the_clone_when_confirmed(tmp_path):
 
 
 def test_a_config_error_is_reported_without_a_traceback(tmp_path, capsys):
-    from deploy.cli import main
+    from npd.cli import main
 
     paths = Paths.under(tmp_path)
     repo = paths.clone_dir("broken")
     repo.mkdir(parents=True)
-    (repo / "deploy.toml").write_text('[app]\nname = "broken"\n')  # no [service]
+    (repo / "npd.toml").write_text('[app]\nname = "broken"\n')  # no [service]
     assert main(["--root", str(tmp_path), "diff", "broken"]) == 1
     assert "error:" in capsys.readouterr().err
 
 
 def test_apply_failure_carries_what_already_took_effect():
-    from deploy.reconcile import ReloadFailed
+    from npd.reconcile import ReloadFailed
 
     exc = ReloadFailed("reload broke", actions_completed={"daemon-reload"})
     assert exc.actions_completed == {"daemon-reload"}
@@ -165,15 +165,15 @@ def test_apply_failure_reaches_the_user_via_main(monkeypatch, capsys):
     exception constructor; it never drives cli.main(), so "does
     actions_completed actually reach the terminal" was untested. Drive it
     for real by making a command raise ReloadFailed and checking stderr."""
-    from deploy.cli import main
-    from deploy.reconcile import ReloadFailed
+    from npd.cli import main
+    from npd.reconcile import ReloadFailed
 
     def _boom(*args, **kwargs):
         raise ReloadFailed(
             "systemctl reload nginx failed", actions_completed={"daemon-reload"}
         )
 
-    monkeypatch.setattr("deploy.cli.commands.diff", _boom)
+    monkeypatch.setattr("npd.cli.commands.diff", _boom)
     assert main(["diff", "pokemon"]) == 1
     err = capsys.readouterr().err
     assert "error:" in err
@@ -182,9 +182,9 @@ def test_apply_failure_reaches_the_user_via_main(monkeypatch, capsys):
 
 def test_logs_goes_straight_to_subprocess_call_not_through_runner(monkeypatch):
     """logs() must not go through Runner: RealRunner captures stdout/stderr,
-    which would make `deploy logs` print nothing and `deploy logs -f` hang
+    which would make `npd logs` print nothing and `npd logs -f` hang
     forever capturing an endless stream with nothing on screen."""
-    from deploy import commands
+    from npd import commands
 
     calls = []
     monkeypatch.setattr(
@@ -195,7 +195,7 @@ def test_logs_goes_straight_to_subprocess_call_not_through_runner(monkeypatch):
 
 
 def test_logs_follow_passes_dash_f_instead_of_no_pager(monkeypatch):
-    from deploy import commands
+    from npd import commands
 
     calls = []
     monkeypatch.setattr(
@@ -208,7 +208,7 @@ def test_logs_follow_passes_dash_f_instead_of_no_pager(monkeypatch):
 
 def test_remove_refuses_to_delete_a_unit_still_reported_active(tmp_path):
     """If systemctl stop did not actually take effect, deleting the unit
-    would leave a running service invisible to `deploy list` (no port
+    would leave a running service invisible to `npd list` (no port
     record, no unit file left to identify it)."""
     paths = Paths.under(tmp_path)
     make_repo(paths, "pokemon", POKEMON_TOML)
@@ -232,7 +232,7 @@ def test_cli_rejects_a_path_traversal_app_name_before_touching_paths(tmp_path, c
     """A name like "../../something" must never reach Paths.clone_dir /
     env_file, which just concatenate — the rejection has to happen in the
     CLI layer, before any command function runs."""
-    from deploy.cli import main
+    from npd.cli import main
 
     assert main(["--root", str(tmp_path), "remove", "../../etc", "--purge"]) == 1
     err = capsys.readouterr().err
@@ -242,7 +242,7 @@ def test_cli_rejects_a_path_traversal_app_name_before_touching_paths(tmp_path, c
 
 def test_list_continues_past_a_broken_apps_config(tmp_path):
     """The command someone reaches for to find out what is wrong must not be
-    the one that breaks first: one app with an invalid deploy.toml must not
+    the one that breaks first: one app with an invalid npd.toml must not
     stop every other, healthy app from listing."""
     paths = Paths.under(tmp_path)
     make_repo(paths, "pokemon", POKEMON_TOML)
@@ -250,7 +250,7 @@ def test_list_continues_past_a_broken_apps_config(tmp_path):
 
     broken = paths.clone_dir("broken")
     broken.mkdir(parents=True)
-    (broken / "deploy.toml").write_text('[app]\nname = "broken"\n')  # no [service]
+    (broken / "npd.toml").write_text('[app]\nname = "broken"\n')  # no [service]
     paths.units.mkdir(parents=True, exist_ok=True)
     paths.systemd_unit_file("broken").write_text("not a real unit")
 
@@ -266,14 +266,14 @@ def test_a_called_process_error_is_reported_without_a_traceback(monkeypatch, cap
     a failed build -- all raise CalledProcessError, and all are first-run
     shaped failures that must print a clean message, not a Python
     traceback."""
-    from deploy.cli import main
+    from npd.cli import main
 
     def _boom(*args, **kwargs):
         raise subprocess.CalledProcessError(
             7, ["git", "clone", "bad"], output="", stderr="Host key verification failed.\n"
         )
 
-    monkeypatch.setattr("deploy.cli.commands.diff", _boom)
+    monkeypatch.setattr("npd.cli.commands.diff", _boom)
     assert main(["diff", "pokemon"]) == 1
     err = capsys.readouterr().err
     assert "error:" in err
@@ -286,12 +286,12 @@ def test_a_called_process_error_with_no_captured_stderr_still_reports_cleanly(
 ):
     """A streamed command (build steps, journalctl) never has exc.stderr;
     the handler must not choke on that, and must not print an empty line."""
-    from deploy.cli import main
+    from npd.cli import main
 
     def _boom(*args, **kwargs):
         raise subprocess.CalledProcessError(1, ["false"])
 
-    monkeypatch.setattr("deploy.cli.commands.diff", _boom)
+    monkeypatch.setattr("npd.cli.commands.diff", _boom)
     assert main(["diff", "pokemon"]) == 1
     err = capsys.readouterr().err
     assert "error:" in err
@@ -304,11 +304,11 @@ def test_update_all_continues_past_a_broken_app_and_reports_failure(
     """IMPORTANT 5: `update --all` used to abort the whole loop via
     `max(<generator>)` on the first app to raise -- a DirtyRepo or
     ConfigError from one app must not silently skip updating the rest."""
-    from deploy.cli import main
+    from npd.cli import main
 
     # Route RealRunner to RecordingRunner so the healthy app's git/systemctl
     # calls never touch the real system.
-    monkeypatch.setattr("deploy.cli.RealRunner", RecordingRunner)
+    monkeypatch.setattr("npd.cli.RealRunner", RecordingRunner)
 
     paths = Paths.under(tmp_path)
     make_repo(paths, "pokemon", POKEMON_TOML)
@@ -316,7 +316,7 @@ def test_update_all_continues_past_a_broken_app_and_reports_failure(
 
     broken = paths.clone_dir("broken")
     broken.mkdir(parents=True)
-    (broken / "deploy.toml").write_text('[app]\nname = "broken"\n')  # no [service]
+    (broken / "npd.toml").write_text('[app]\nname = "broken"\n')  # no [service]
     paths.units.mkdir(parents=True, exist_ok=True)
     paths.systemd_unit_file("broken").write_text("not a real unit")
 
@@ -331,6 +331,6 @@ def test_update_all_continues_past_a_broken_app_and_reports_failure(
 def test_update_all_with_no_installed_apps_succeeds(tmp_path):
     """max() over an empty generator used to raise ValueError; an explicit
     loop over zero apps should just do nothing and succeed."""
-    from deploy.cli import main
+    from npd.cli import main
 
     assert main(["--root", str(tmp_path), "update", "--all"]) == 0

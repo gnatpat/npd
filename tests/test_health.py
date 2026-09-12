@@ -1,7 +1,7 @@
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from deploy.health import wait_healthy
+from npd.health import wait_healthy
 
 
 class Ok(BaseHTTPRequestHandler):

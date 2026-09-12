@@ -8,16 +8,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from deploy.config import AppConfig, ConfigError, parse_config
-from deploy.gitrepo import clone, head_commit, pull_ff_only, remote_url, repo_url
-from deploy.health import wait_healthy
-from deploy.paths import Paths
-from deploy.ports import allocate_port, ports_in_use
-from deploy.reconcile import apply_changes, owned_artifacts, plan_app_changes, plan_changes
-from deploy.render import render
-from deploy.runner import Runner
-from deploy.secrets import merge_secrets, missing_secrets, read_env_file
-from deploy.static import publish, published_paths
+from npd.config import AppConfig, ConfigError, parse_config
+from npd.gitrepo import clone, head_commit, pull_ff_only, remote_url, repo_url
+from npd.health import wait_healthy
+from npd.paths import Paths
+from npd.ports import allocate_port, ports_in_use
+from npd.reconcile import apply_changes, owned_artifacts, plan_app_changes, plan_changes
+from npd.render import render
+from npd.runner import Runner
+from npd.secrets import merge_secrets, missing_secrets, read_env_file
+from npd.static import publish, published_paths
 
 SYSTEMCTL = "/usr/bin/systemctl"
 Prompt = Callable[[str, str], str]
@@ -25,7 +25,7 @@ Prompt = Callable[[str, str], str]
 
 def load_app(name: str, *, paths: Paths, runner: Runner) -> tuple[AppConfig, Path]:
     repo = paths.clone_dir(name)
-    config_file = repo / "deploy.toml"
+    config_file = repo / "npd.toml"
     if not config_file.exists():
         raise FileNotFoundError(f"{config_file} does not exist")
     return parse_config(config_file.read_text(), repo_name=name), repo
@@ -243,7 +243,7 @@ def install(
     # be found at ~/apps/<repo_name> any more, so look it up by remote
     # before assuming it needs cloning — otherwise a second install of an
     # app whose name differs from its repo clones a duplicate that is never
-    # cleaned up (the hard rule is deploy never deletes a clone).
+    # cleaned up (the hard rule is npd never deletes a clone).
     existing = _existing_clone(url, paths=paths, runner=runner)
     if existing is not None:
         config, repo = load_app(existing.name, paths=paths, runner=runner)
@@ -269,7 +269,7 @@ def install(
 def update(name: str, *, paths: Paths, runner: Runner, prompt: Prompt) -> int:
     config, repo = load_app(name, paths=paths, runner=runner)
     moved = pull_ff_only(repo, runner=runner)
-    # Re-read: the pull may have changed deploy.toml itself.
+    # Re-read: the pull may have changed npd.toml itself.
     config, repo = load_app(name, paths=paths, runner=runner)
 
     port = None
@@ -317,9 +317,9 @@ def status_of(
     port = ports_in_use(paths).get(name)
     route = None
     error = None
-    config_file = paths.clone_dir(name) / "deploy.toml"
+    config_file = paths.clone_dir(name) / "npd.toml"
     if config_file.exists():
-        # A broken deploy.toml must not take down the whole `list` command —
+        # A broken npd.toml must not take down the whole `list` command —
         # it is the tool someone reaches for to find out what is wrong, so a
         # bad config for one app is reported on that app's row (route "?")
         # while every other, healthy app still lists normally.
@@ -391,7 +391,7 @@ def diff(name: str | None, *, paths: Paths, runner: Runner) -> int:
         # and test_diff_writes_nothing) is that it runs no subprocess at
         # all, and computing the current commit would mean calling out to
         # git. The trade-off is that diff on an already-installed service
-        # always shows its DEPLOY_COMMIT line as a pending removal -- a
+        # always shows its NPD_COMMIT line as a pending removal -- a
         # known, accepted limitation, not something this pass fixes.
         for change in plan_app_changes(app, render(config, port, paths), paths):
             any_changes = True
@@ -426,7 +426,7 @@ def restart(name: str, *, paths: Paths, runner: Runner) -> int:
 def logs(name: str, *, follow: bool) -> int:
     """journalctl is a command the USER watches, not one whose output the
     tool consumes — unlike everything else in this module, it must not go
-    through Runner (RealRunner captures stdout/stderr, so `deploy logs`
+    through Runner (RealRunner captures stdout/stderr, so `npd logs`
     would print nothing, and `-f` would capture an endless stream forever
     with nothing on screen). subprocess.call inherits the terminal directly,
     the same way dev.run_dev does for the foreground dev server."""
@@ -468,7 +468,7 @@ def remove(
 
         # Confirm the stop actually took effect before deleting the unit
         # that defines it. If it did not, deleting the unit now would leave
-        # a running service invisible to `deploy list` (no port record, no
+        # a running service invisible to `npd list` (no port record, no
         # unit file) and awkward to kill by hand.
         result = runner.run(["sudo", SYSTEMCTL, "is-active", name], check=False)
         active = (result.stdout or "").strip()

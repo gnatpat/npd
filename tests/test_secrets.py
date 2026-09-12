@@ -1,6 +1,6 @@
 import stat
 
-from deploy.secrets import (
+from npd.secrets import (
     merge_secrets,
     missing_secrets,
     read_env_file,

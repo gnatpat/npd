@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from deploy.config import parse_config
-from deploy.dev import MissingSecrets, dev_command, dev_workdir, resolve_env, run_dev
-from deploy.runner import RecordingRunner
+from npd.config import parse_config
+from npd.dev import MissingSecrets, dev_command, dev_workdir, resolve_env, run_dev
+from npd.runner import RecordingRunner
 
 WITH_SECRET = """
 [service]
@@ -94,7 +94,7 @@ def test_static_dev_serves_with_sys_executable_not_a_bare_python(monkeypatch):
     )
     calls = []
     monkeypatch.setattr(
-        "deploy.dev.subprocess.call",
+        "npd.dev.subprocess.call",
         lambda argv: calls.append(argv) or 0,
     )
     runner = RecordingRunner()
@@ -114,7 +114,7 @@ def test_build_steps_stream_via_subprocess_call_not_runner(monkeypatch):
     c = cfg('[service]\nstart = "run"\n[build]\nsteps = ["echo hi"]\n')
     calls = []
     monkeypatch.setattr(
-        "deploy.dev.subprocess.call",
+        "npd.dev.subprocess.call",
         lambda argv, **kw: calls.append(argv) or 0,
     )
     runner = RecordingRunner()
@@ -124,9 +124,9 @@ def test_build_steps_stream_via_subprocess_call_not_runner(monkeypatch):
 
 
 def test_a_failing_build_step_raises_instead_of_continuing_to_run_the_app(monkeypatch):
-    """A failed build step must stop `deploy dev --build`, not fall through
+    """A failed build step must stop `npd dev --build`, not fall through
     to running the app against a half-built tree."""
     c = cfg('[service]\nstart = "run"\n[build]\nsteps = ["false"]\n')
-    monkeypatch.setattr("deploy.dev.subprocess.call", lambda argv, **kw: 1)
+    monkeypatch.setattr("npd.dev.subprocess.call", lambda argv, **kw: 1)
     with pytest.raises(subprocess.CalledProcessError):
         run_dev(c, Path("/repo"), port=8000, build=True, prefix=False, runner=RecordingRunner())

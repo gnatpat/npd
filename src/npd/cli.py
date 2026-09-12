@@ -4,13 +4,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from deploy import commands
-from deploy.config import ConfigError, parse_config
-from deploy.dev import DEFAULT_DEV_PORT, run_dev
-from deploy.gitrepo import DirtyRepo
-from deploy.paths import Paths, app_name_error
-from deploy.reconcile import ApplyFailed, ForeignFile
-from deploy.runner import RealRunner
+from npd import commands
+from npd.config import ConfigError, parse_config
+from npd.dev import DEFAULT_DEV_PORT, run_dev
+from npd.gitrepo import DirtyRepo
+from npd.paths import Paths, app_name_error
+from npd.reconcile import ApplyFailed, ForeignFile
+from npd.runner import RealRunner
 
 # Every exception a single-app command can let escape, other than
 # KeyboardInterrupt: `update --all` catches the same set per app (see below)
@@ -28,7 +28,7 @@ _COMMAND_ERRORS = (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="deploy")
+    parser = argparse.ArgumentParser(prog="npd")
     parser.add_argument(
         "--root",
         type=Path,
@@ -80,7 +80,7 @@ def _validated(name: str) -> str:
     """Reject a CLI-supplied app name before it ever reaches Paths.
 
     Without this, a name straight from argparse flows unchecked into
-    Paths.clone_dir / env_file, which just concatenate — so e.g. `deploy
+    Paths.clone_dir / env_file, which just concatenate — so e.g. `npd
     remove --purge "../../something"` could construct a path outside
     ~/apps. Raises ValueError, which main() already catches and prints
     cleanly."""
@@ -163,7 +163,7 @@ def _run(argv: list[str] | None = None) -> int:
     if args.command == "dev":
         repo = Path.cwd()
         config = parse_config(
-            (repo / "deploy.toml").read_text(), repo_name=repo.name
+            (repo / "npd.toml").read_text(), repo_name=repo.name
         )
         return run_dev(
             config,

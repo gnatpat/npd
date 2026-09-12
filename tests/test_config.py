@@ -1,6 +1,6 @@
 import pytest
 
-from deploy.config import ConfigError, parse_config
+from npd.config import ConfigError, parse_config
 
 SERVICE_TOML = """
 [app]

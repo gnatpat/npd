@@ -1,4 +1,4 @@
-"""A local reverse proxy that reproduces, for `deploy dev --prefix`, the
+"""A local reverse proxy that reproduces, for `npd dev --prefix`, the
 prefix-stripping and header-forwarding behaviour that
 `render.render_nginx_snippet` generates for production nginx — so prefix bugs
 (e.g. an app that assumes it owns `/`) surface on the laptop instead of on
@@ -16,7 +16,7 @@ import http.client
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from deploy.config import NginxConfig
+from npd.config import NginxConfig
 
 
 @dataclass(frozen=True)

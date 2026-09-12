@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from deploy.config import parse_config
-from deploy.paths import MANAGED_HEADER, Paths
-from deploy.render import render_nginx_snippet
+from npd.config import parse_config
+from npd.paths import MANAGED_HEADER, Paths
+from npd.render import render_nginx_snippet
 
 PATHS = Paths.under(Path("/srv/test"))
 
@@ -61,7 +61,7 @@ def test_static_app_uses_alias_and_try_files():
         '[nginx]\npath = "/boggle/"\n',
         port=None,
     )
-    assert "alias /srv/test/var/www/deploy/x/;" in out
+    assert "alias /srv/test/var/www/npd/x/;" in out
     assert "try_files $uri $uri/ =404;" in out
     assert "proxy_pass" not in out
     assert "location = /boggle { return 301 /boggle/; }" in out
