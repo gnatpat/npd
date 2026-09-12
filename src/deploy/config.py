@@ -1,8 +1,10 @@
+import re
 import tomllib
 from dataclasses import dataclass, field
 from typing import Any
 
 VALID_TYPES = ("service", "static")
+NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _has_invalid_chars(value: str) -> str | None:
@@ -39,6 +41,27 @@ def _string(value: Any, key: str, where: str) -> str:
     if not isinstance(value, str):
         raise ConfigError(f"{where}.{key} must be a string, got {type(value).__name__}")
     return value
+
+
+def _validate_app_name(name: str) -> None:
+    """Validate the app name is a safe single path segment."""
+    if not name:
+        raise ConfigError("app name cannot be empty")
+    if "/" in name or "\\" in name:
+        raise ConfigError(
+            f"app name {name!r} contains slashes; "
+            "it must be a single path segment (letters, digits, hyphen, underscore, dot)"
+        )
+    if name == "." or name == "..":
+        raise ConfigError(
+            f"app name {name!r} is not allowed; "
+            "it must be a single path segment (letters, digits, hyphen, underscore, dot)"
+        )
+    if not NAME_PATTERN.match(name):
+        raise ConfigError(
+            f"app name {name!r} contains invalid characters; "
+            "it must contain only letters, digits, hyphen, underscore, or dot"
+        )
 
 
 @dataclass(frozen=True)
@@ -93,6 +116,7 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
         )
 
     name = app.get("name") or repo_name
+    _validate_app_name(name)
     env_table = _table(raw, "env")
     env = {str(k): str(v) for k, v in env_table.items()}
     secrets_table = _table(raw, "secrets")

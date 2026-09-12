@@ -263,3 +263,75 @@ def test_service_start_containing_newline_is_rejected():
             '[service]\nstart = "hello\\nworld"\n',
             repo_name="x",
         )
+
+
+def test_app_name_containing_path_traversal_is_rejected():
+    with pytest.raises(ConfigError, match="contains slashes"):
+        parse_config(
+            '[app]\nname = "../../../home/nathan/apps/pokemon"\n[service]\nstart = "run"\n',
+            repo_name="x",
+        )
+
+
+def test_app_name_containing_forward_slash_is_rejected():
+    with pytest.raises(ConfigError, match="contains slashes"):
+        parse_config(
+            '[app]\nname = "a/b"\n[service]\nstart = "run"\n',
+            repo_name="x",
+        )
+
+
+def test_app_name_of_exactly_parent_dir_is_rejected():
+    with pytest.raises(ConfigError, match=r"\.\."):
+        parse_config(
+            '[app]\nname = ".."\n[service]\nstart = "run"\n',
+            repo_name="x",
+        )
+
+
+def test_app_name_of_exactly_dot_is_rejected():
+    with pytest.raises(ConfigError, match=r"^\w"):  # Rejects '.'
+        parse_config(
+            '[app]\nname = "."\n[service]\nstart = "run"\n',
+            repo_name="x",
+        )
+
+
+def test_repo_name_containing_path_traversal_is_rejected():
+    with pytest.raises(ConfigError, match="contains slashes"):
+        parse_config(
+            '[service]\nstart = "run"\n',
+            repo_name="../../../etc",
+        )
+
+
+def test_app_name_pokemon_is_accepted():
+    c = parse_config(
+        '[app]\nname = "pokemon"\n[service]\nstart = "run"\n',
+        repo_name="x",
+    )
+    assert c.name == "pokemon"
+
+
+def test_app_name_boggle_solver_is_accepted():
+    c = parse_config(
+        '[app]\nname = "boggle-solver"\n[service]\nstart = "run"\n',
+        repo_name="x",
+    )
+    assert c.name == "boggle-solver"
+
+
+def test_app_name_with_dot_is_accepted():
+    c = parse_config(
+        '[app]\nname = "my.app"\n[service]\nstart = "run"\n',
+        repo_name="x",
+    )
+    assert c.name == "my.app"
+
+
+def test_app_name_with_underscore_is_accepted():
+    c = parse_config(
+        '[app]\nname = "a_b"\n[service]\nstart = "run"\n',
+        repo_name="x",
+    )
+    assert c.name == "a_b"
