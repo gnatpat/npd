@@ -2,13 +2,13 @@ from pathlib import Path
 
 from deploy.config import parse_config
 from deploy.paths import MANAGED_HEADER, Paths
-from deploy.render import render_nginx
+from deploy.render import render_nginx_snippet
 
 PATHS = Paths.under(Path("/srv/test"))
 
 
 def render(toml: str, port: int | None = 8201) -> str:
-    return render_nginx(parse_config(toml, repo_name="x"), port, PATHS)
+    return render_nginx_snippet(parse_config(toml, repo_name="x"), port, PATHS)
 
 
 def test_service_without_strip_has_no_trailing_slash_on_proxy_pass():

@@ -3,12 +3,12 @@ import pytest
 from deploy.config import parse_config
 from deploy.paths import Paths
 from deploy.ports import PortExhausted, allocate_port, ports_in_use
-from deploy.render import render_unit
+from deploy.render import render_systemd_unit
 
 
 def write_unit(paths: Paths, name: str, port: int) -> None:
     paths.units.mkdir(parents=True, exist_ok=True)
-    paths.unit_file(name).write_text(
+    paths.systemd_unit_file(name).write_text(
         "# Managed by deploy — edits will be overwritten\n"
         "[Service]\n"
         f"Environment=PORT={port}\n"
@@ -80,12 +80,12 @@ def test_exhausted_range_raises(tmp_path):
         allocate_port(paths, name="new")
 
 
-def test_ports_in_use_with_actual_render_unit_output(tmp_path):
-    """Ensure regex matches quoted form from render_unit, not just hand-built fixtures."""
+def test_ports_in_use_with_actual_render_systemd_unit_output(tmp_path):
+    """Ensure regex matches quoted form from render_systemd_unit, not just hand-built fixtures."""
     paths = Paths.under(tmp_path)
     paths.units.mkdir(parents=True, exist_ok=True)
 
-    # Create a minimal config that render_unit will accept
+    # Create a minimal config that render_systemd_unit will accept
     toml_text = """
 [app]
 name = "web"
@@ -95,8 +95,8 @@ start = "python app.py"
 """
 
     config = parse_config(toml_text, repo_name="test")
-    unit_text = render_unit(config, 8250, paths)
-    paths.unit_file("web").write_text(unit_text)
+    unit_text = render_systemd_unit(config, 8250, paths)
+    paths.systemd_unit_file("web").write_text(unit_text)
 
     # Verify the regex matches the quoted form
     assert ports_in_use(paths) == {"web": 8250}
@@ -112,7 +112,7 @@ def test_skips_unreadable_units_and_still_reads_good_ones(tmp_path, capsys):
     write_unit(paths, "good2", 8201)
 
     # Create an unreadable file with invalid UTF-8 bytes
-    bad_unit = paths.unit_file("bad")
+    bad_unit = paths.systemd_unit_file("bad")
     bad_unit.write_bytes(b"\xff\xfe invalid utf-8")
 
     # Should still read the good ports and skip the bad one with a warning

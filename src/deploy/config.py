@@ -29,6 +29,37 @@ def _has_invalid_chars(value: str) -> str | None:
     return None
 
 
+def _check_reserved_names(env: dict[str, str], secrets: dict[str, str]) -> None:
+    """Reject PORT/PATH in either [env] or [secrets]: PORT is assigned by
+    deploy and PATH is set explicitly in the generated unit, so an app
+    declaring either would silently fight the generated values."""
+    for key in env:
+        if key in RESERVED_ENV_KEYS:
+            raise ConfigError(
+                f"{key!r} may not be set in [env]; PORT is assigned by deploy "
+                "and PATH is set explicitly in the generated unit"
+            )
+    for key in secrets:
+        if key in RESERVED_ENV_KEYS:
+            raise ConfigError(
+                f"{key!r} may not be set in [secrets]; PORT is assigned by deploy "
+                "and PATH is set explicitly in the generated unit"
+            )
+
+
+def _check_value_characters(table: dict[str, str], table_name: str) -> None:
+    """Reject control characters, double quotes, or backslashes in either
+    the keys or values of an [env]/[secrets] table — these would corrupt the
+    generated unit's `Environment=`/`EnvironmentFile=` lines."""
+    for key, value in table.items():
+        invalid = _has_invalid_chars(key)
+        if invalid:
+            raise ConfigError(f"{table_name} key {key!r} contains {invalid}")
+        invalid = _has_invalid_chars(value)
+        if invalid:
+            raise ConfigError(f"{table_name} value for {key!r} contains {invalid}")
+
+
 class ConfigError(Exception):
     """A deploy.toml that cannot be used. The message is shown to the user."""
 
@@ -130,34 +161,9 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
     secrets_table = _table(raw, "secrets")
     secrets = {str(k): str(v) for k, v in secrets_table.items()}
 
-    for key in env:
-        if key in RESERVED_ENV_KEYS:
-            raise ConfigError(
-                f"{key!r} may not be set in [env]; PORT is assigned by deploy "
-                "and PATH is set explicitly in the generated unit"
-            )
-    for key in secrets:
-        if key in RESERVED_ENV_KEYS:
-            raise ConfigError(
-                f"{key!r} may not be set in [secrets]; PORT is assigned by deploy "
-                "and PATH is set explicitly in the generated unit"
-            )
-
-    # Validate env and secrets for invalid characters
-    for key, value in env.items():
-        invalid = _has_invalid_chars(key)
-        if invalid:
-            raise ConfigError(f"env key {key!r} contains {invalid}")
-        invalid = _has_invalid_chars(value)
-        if invalid:
-            raise ConfigError(f"env value for {key!r} contains {invalid}")
-    for key, value in secrets.items():
-        invalid = _has_invalid_chars(key)
-        if invalid:
-            raise ConfigError(f"secrets key {key!r} contains {invalid}")
-        invalid = _has_invalid_chars(value)
-        if invalid:
-            raise ConfigError(f"secrets value for {key!r} contains {invalid}")
+    _check_reserved_names(env, secrets)
+    _check_value_characters(env, "env")
+    _check_value_characters(secrets, "secrets")
 
     both = sorted(set(env) & set(secrets))
     if both:

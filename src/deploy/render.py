@@ -1,7 +1,19 @@
+from dataclasses import dataclass
 from pathlib import Path
 
-from deploy.config import AppConfig
-from deploy.paths import MANAGED_HEADER, Paths
+from deploy.config import AppConfig, NginxConfig
+from deploy.paths import ArtifactKind, MANAGED_HEADER, NGINX_SNIPPET, Paths, SYSTEMD_UNIT
+
+
+@dataclass(frozen=True)
+class Artifact:
+    """One generated file: what kind it is, where it goes, and its exact
+    contents. The kind travels with the file instead of being re-derived
+    downstream from its path."""
+
+    kind: ArtifactKind
+    path: Path
+    contents: str
 
 
 def _escape_unit_percent(value: str) -> str:
@@ -11,7 +23,29 @@ def _escape_unit_percent(value: str) -> str:
     return value.replace("%", "%%")
 
 
-def render_nginx(config: AppConfig, port: int | None, paths: Paths) -> str:
+def _static_location_lines(config: AppConfig, paths: Paths) -> list[str]:
+    return [
+        f"    alias {paths.static / config.name}/;",
+        "    try_files $uri $uri/ =404;",
+    ]
+
+
+def _proxy_location_lines(nginx: NginxConfig, port: int | None, path: str) -> list[str]:
+    lines = []
+    if nginx.client_max_body_size:
+        lines.append(f"    client_max_body_size {nginx.client_max_body_size};")
+    lines.append("    proxy_set_header Host $host;")
+    lines.append("    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;")
+    lines.append("    proxy_set_header X-Forwarded-Proto $scheme;")
+    lines.append(f"    proxy_set_header X-Forwarded-Prefix {path};")
+    # The trailing slash is the whole of strip_prefix: with it nginx
+    # replaces the matched prefix, without it the full URI is passed on.
+    suffix = "/" if nginx.strip_prefix else ""
+    lines.append(f"    proxy_pass http://127.0.0.1:{port}{suffix};")
+    return lines
+
+
+def render_nginx_snippet(config: AppConfig, port: int | None, paths: Paths) -> str:
     """The location block(s) for one app. Pure: no IO, no subprocess."""
     if config.nginx is None:
         raise ValueError(f"{config.name} has no [nginx] section to render")
@@ -27,31 +61,44 @@ def render_nginx(config: AppConfig, port: int | None, paths: Paths) -> str:
 
     lines.append(f"location {path} {{")
     if config.is_static:
-        lines.append(f"    alias {paths.static / config.name}/;")
-        lines.append("    try_files $uri $uri/ =404;")
+        lines += _static_location_lines(config, paths)
     else:
-        if config.nginx.client_max_body_size:
-            lines.append(
-                f"    client_max_body_size {config.nginx.client_max_body_size};"
-            )
-        lines.append("    proxy_set_header Host $host;")
-        lines.append(
-            "    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
-        )
-        lines.append("    proxy_set_header X-Forwarded-Proto $scheme;")
-        lines.append(f"    proxy_set_header X-Forwarded-Prefix {path};")
-        # The trailing slash is the whole of strip_prefix: with it nginx
-        # replaces the matched prefix, without it the full URI is passed on.
-        suffix = "/" if config.nginx.strip_prefix else ""
-        lines.append(f"    proxy_pass http://127.0.0.1:{port}{suffix};")
+        lines += _proxy_location_lines(config.nginx, port, path)
     lines.append("}")
     return "\n".join(lines) + "\n"
 
 
 UNIT_PATH = "/home/nathan/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
+# Mostly-static text, so a template reads straighter than an accumulating
+# list of lines. {var_block} is the one dynamic-shaped part: the sorted
+# `Environment=` lines plus the optional `EnvironmentFile=` line, pre-joined
+# with their own trailing newlines (or "" when there are none) so the
+# newline count here matches the old lines.append()-based output exactly.
+_UNIT_TEMPLATE = (
+    "{header}\n"
+    "[Unit]\n"
+    "Description={name} (managed by deploy)\n"
+    "After=network.target\n"
+    "StartLimitIntervalSec=0\n"
+    "\n"
+    "[Service]\n"
+    "Type=simple\n"
+    "User=nathan\n"
+    "WorkingDirectory={workdir}\n"
+    'Environment="PATH={unit_path}"\n'
+    'Environment="PORT={port}"\n'
+    "{var_block}"
+    "ExecStart=/bin/bash -c 'exec {start}'\n"
+    "Restart=always\n"
+    "RestartSec=1\n"
+    "\n"
+    "[Install]\n"
+    "WantedBy=multi-user.target\n"
+)
 
-def render_unit(config: AppConfig, port: int, paths: Paths) -> str:
+
+def render_systemd_unit(config: AppConfig, port: int, paths: Paths) -> str:
     """The systemd unit for one service. Pure: no IO, no subprocess."""
     if config.is_static:
         raise ValueError(f"{config.name} is static and has no unit")
@@ -62,48 +109,50 @@ def render_unit(config: AppConfig, port: int, paths: Paths) -> str:
     if config.service.workdir:
         workdir = workdir / config.service.workdir
 
-    lines = [
-        MANAGED_HEADER,
-        "[Unit]",
-        f"Description={config.name} (managed by deploy)",
-        "After=network.target",
-        "StartLimitIntervalSec=0",
-        "",
-        "[Service]",
-        "Type=simple",
-        "User=nathan",
-        f"WorkingDirectory={workdir}",
-        f'Environment="PATH={UNIT_PATH}"',
-        f"Environment=\"PORT={port}\"",
-    ]
-    for key in sorted(config.env):
-        value = _escape_unit_percent(config.env[key])
-        lines.append(f'Environment="{key}={value}"')
-    if config.secrets:
-        lines.append(f"EnvironmentFile={paths.env_file(config.name)}")
+    env_lines = "".join(
+        f'Environment="{key}={_escape_unit_percent(config.env[key])}"\n'
+        for key in sorted(config.env)
+    )
+    env_file_line = (
+        f"EnvironmentFile={paths.env_file(config.name)}\n" if config.secrets else ""
+    )
+    var_block = env_lines + env_file_line
+
     start = _escape_unit_percent(config.service.start)
-    lines += [
-        f"ExecStart=/bin/bash -c 'exec {start}'",
-        "Restart=always",
-        "RestartSec=1",
-        "",
-        "[Install]",
-        "WantedBy=multi-user.target",
-    ]
-    return "\n".join(lines) + "\n"
+    return _UNIT_TEMPLATE.format(
+        header=MANAGED_HEADER,
+        name=config.name,
+        workdir=workdir,
+        unit_path=UNIT_PATH,
+        port=port,
+        var_block=var_block,
+        start=start,
+    )
 
 
-def render(config: AppConfig, port: int | None, paths: Paths) -> dict[Path, str]:
-    """Every file this app owns, as absolute path -> exact contents.
+def render(config: AppConfig, port: int | None, paths: Paths) -> tuple[Artifact, ...]:
+    """Every file this app owns, as a tuple of Artifacts.
 
     This is the whole of the tool's desired state. Reconcile diffs it against
     disk; nothing else decides what gets written.
     """
-    files: dict[Path, str] = {}
+    artifacts: list[Artifact] = []
     if not config.is_static:
         if port is None:
             raise ValueError(f"{config.name} is a service and requires a port")
-        files[paths.unit_file(config.name)] = render_unit(config, port, paths)
+        artifacts.append(
+            Artifact(
+                SYSTEMD_UNIT,
+                paths.systemd_unit_file(config.name),
+                render_systemd_unit(config, port, paths),
+            )
+        )
     if config.nginx is not None:
-        files[paths.nginx_file(config.name)] = render_nginx(config, port, paths)
-    return files
+        artifacts.append(
+            Artifact(
+                NGINX_SNIPPET,
+                paths.nginx_snippet_file(config.name),
+                render_nginx_snippet(config, port, paths),
+            )
+        )
+    return tuple(artifacts)

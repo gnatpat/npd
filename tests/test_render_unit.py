@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 
 from deploy.config import parse_config
-from deploy.paths import MANAGED_HEADER, Paths
-from deploy.render import render, render_unit
+from deploy.paths import MANAGED_HEADER, NGINX_SNIPPET, SYSTEMD_UNIT, Paths
+from deploy.render import render, render_systemd_unit
 
 PATHS = Paths.under(Path("/srv/test"))
 
@@ -25,7 +25,7 @@ COLLECTION_PASSWORD = "the password"
 
 
 def unit(toml: str = POKEMON, port: int = 8151) -> str:
-    return render_unit(parse_config(toml, repo_name="pokemon"), port, PATHS)
+    return render_systemd_unit(parse_config(toml, repo_name="pokemon"), port, PATHS)
 
 
 def test_unit_starts_with_the_managed_header():
@@ -86,17 +86,20 @@ def test_restart_policy_is_always_with_one_second_backoff():
 
 
 def test_render_produces_unit_and_nginx_for_a_service():
-    files = render(parse_config(POKEMON, repo_name="pokemon"), 8151, PATHS)
-    assert set(files) == {
-        Path("/srv/test/etc/deploy/systemd/pokemon.service"),
-        Path("/srv/test/etc/nginx/deploy.d/pokemon.conf"),
+    artifacts = render(parse_config(POKEMON, repo_name="pokemon"), 8151, PATHS)
+    assert {(a.kind, a.path) for a in artifacts} == {
+        (SYSTEMD_UNIT, Path("/srv/test/etc/deploy/systemd/pokemon.service")),
+        (NGINX_SNIPPET, Path("/srv/test/etc/nginx/deploy.d/pokemon.conf")),
     }
 
 
 def test_render_produces_only_a_unit_for_an_internal_service():
     cfg = parse_config('[service]\nstart = "run"\n', repo_name="internal")
-    files = render(cfg, 8201, PATHS)
-    assert set(files) == {Path("/srv/test/etc/deploy/systemd/internal.service")}
+    artifacts = render(cfg, 8201, PATHS)
+    assert {a.path for a in artifacts} == {
+        Path("/srv/test/etc/deploy/systemd/internal.service")
+    }
+    assert {a.kind for a in artifacts} == {SYSTEMD_UNIT}
 
 
 def test_render_produces_only_nginx_for_a_static_app():
@@ -105,8 +108,11 @@ def test_render_produces_only_nginx_for_a_static_app():
         '[nginx]\npath = "/boggle/"\n',
         repo_name="boggle",
     )
-    files = render(cfg, None, PATHS)
-    assert set(files) == {Path("/srv/test/etc/nginx/deploy.d/boggle.conf")}
+    artifacts = render(cfg, None, PATHS)
+    assert {a.path for a in artifacts} == {
+        Path("/srv/test/etc/nginx/deploy.d/boggle.conf")
+    }
+    assert {a.kind for a in artifacts} == {NGINX_SNIPPET}
 
 
 def test_rendering_a_service_without_a_port_is_a_programming_error():
@@ -120,7 +126,7 @@ def test_env_value_with_space_is_quoted_and_survives_intact():
         '[service]\nstart = "run"\n[env]\nGREETING = "hello there"\n',
         repo_name="test",
     )
-    out = render_unit(cfg, 8000, PATHS)
+    out = render_systemd_unit(cfg, 8000, PATHS)
     assert 'Environment="GREETING=hello there"\n' in out
 
 
@@ -129,7 +135,7 @@ def test_percent_in_env_value_is_escaped_for_systemd():
         '[service]\nstart = "run"\n[env]\nMSG = "100%"\n',
         repo_name="test",
     )
-    out = render_unit(cfg, 8000, PATHS)
+    out = render_systemd_unit(cfg, 8000, PATHS)
     assert 'Environment="MSG=100%%"\n' in out
 
 
@@ -138,5 +144,5 @@ def test_percent_in_start_command_is_escaped_for_systemd():
         '[service]\nstart = "serve --fmt %H"\n',
         repo_name="test",
     )
-    out = render_unit(cfg, 8000, PATHS)
+    out = render_systemd_unit(cfg, 8000, PATHS)
     assert "ExecStart=/bin/bash -c 'exec serve --fmt %%H'\n" in out
