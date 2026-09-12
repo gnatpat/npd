@@ -41,6 +41,7 @@ pulls and redeploys. Nothing else changes about how the box works.
 | Repo resolution | Short name → `git@github.com:gnatpat/<name>.git`; full URLs also accepted | Server already has SSH access to the account, so private repos work with no extra credential handling. |
 | Routing | Path prefix under natpat.net | Matches what is live today. Subdomains remain a possible later change (see Open questions). |
 | Ports | Auto-allocated from 8200–8299, pinnable per app | Removes the need to remember what is where. Pinning lets existing apps migrate without moving. |
+| Persistent state | None. The generated unit is the record | Every other fact (repo, route, commit, which apps exist) is derivable from the filesystem and git, and derived state cannot go stale. A separate registry could disagree with the units, and for a reconcile tool there is no principled answer to which wins. |
 | Secrets | `/etc/deploy/env/<app>.env`, mode 0600, never in git | Repos are a mix of public and private; secrets must not depend on that. |
 | Build/start commands | Explicit in `deploy.toml` | Convention-guessing is worse to debug than one line of config. |
 | Internal shape | Render + reconcile | Makes the risky part a pure function, so it is testable without a server and `diff`/`--dry-run` come free. |
@@ -61,6 +62,11 @@ Three layers, with the dependencies pointing one way:
    what differs, and trigger only the reloads that the changes require.
    All IO and all subprocess calls live here, behind injected interfaces.
 
+There is no database and no registry file. The generated unit *is* the record:
+it carries the assigned port as `Environment=PORT=`, and everything else the
+tool reports is read back from git, the filesystem and `systemctl` on demand.
+An app is installed if and only if its unit exists.
+
 `install`, `update`, `remove` and `diff` are all thin: they change which apps
 exist and with what config, then call reconcile. Reconcile is idempotent — running
 it twice in a row makes no writes the second time and reloads nothing.
@@ -69,7 +75,6 @@ it twice in a row makes no writes the second time and reloads nothing.
 
 ```
 ~/apps/<name>/                      git clone, owned by nathan
-/etc/deploy/state.toml              registry: name → repo, port, route, commit
 /etc/deploy/env/<name>.env          secrets, mode 0600
 /etc/deploy/systemd/<name>.service  generated unit (nathan-owned)
 /etc/nginx/deploy.d/<name>.conf     generated location block(s)
@@ -222,6 +227,7 @@ if `link` plus `enable` does not behave, the fallback is to run the tool under
 deploy install <name|url>     clone → build → wire up → start
 deploy update <name|--all>    pull → build → apply changes → restart
 deploy list [--fetch]         app, port, route, status, commit; --fetch adds behind-by
+                              (all read live from units, git and systemctl)
 deploy diff [name]            show what would change; writes nothing
 deploy restart <name>
 deploy logs <name> [-f]       journalctl passthrough
@@ -238,13 +244,13 @@ deploy dev [--prefix] [--build] [--port N]    run locally, from a repo checkout
 3. Parse `deploy.toml`; fail with a clear message if missing or invalid.
 4. Preflight: name collision, port collision (pinned or allocated), route
    collision. Abort before any mutation.
-5. Allocate a port from 8200–8299 unless pinned.
+5. Allocate a port: scan `/etc/deploy/systemd/*.service` for `Environment=PORT=`,
+   take the lowest free port in 8200–8299. Skipped if `[service] port` is pinned.
 6. Prompt for declared secrets; write the env file at 0600.
 7. Run build steps.
 8. Render, diff, apply.
 9. `systemctl link`, `enable`, `start`.
 10. Health check.
-11. Record in `state.toml`.
 
 ### update
 
@@ -274,8 +280,8 @@ reuses only the config layer.
 4. Run `[dev] start` if present, otherwise `[service] start`, in the foreground
    from the appropriate `workdir`. Ctrl-C terminates the child cleanly.
 
-Ports: the app binds `$PORT`, default 8000. Production port assignments live in
-the server's state file and are irrelevant locally.
+Ports: the app binds `$PORT`, default 8000. Production port assignments are
+irrelevant locally.
 
 ### `--prefix`
 
@@ -328,6 +334,9 @@ no other apps. It exists to catch prefix and header bugs before deploy.
   and that the managed-header guard refuses to overwrite a foreign file.
 - **Command runner** is injected, so `systemctl`, `git` and build steps are
   recorded rather than executed.
+- **Port allocator:** given a set of existing unit files, assert it picks the
+  lowest free port, skips pinned ports, respects the range bounds, and errors
+  clearly when the range is exhausted.
 - **Local proxy:** tested against a stub upstream that echoes the path and
   headers it received. Assert that `strip_prefix = true` and `false` deliver the
   paths in the Prefix handling table, that the redirect fires only for a
