@@ -56,6 +56,39 @@ def test_an_https_url_is_passed_through():
     assert repo_url(url) == url
 
 
+def test_trailing_slash_is_stripped():
+    assert repo_url("pokemon/") == repo_url("pokemon")
+
+
+def test_empty_string_raises():
+    with pytest.raises(ValueError):
+        repo_url("")
+
+
+def test_whitespace_only_raises():
+    with pytest.raises(ValueError):
+        repo_url("   ")
+
+
+def test_bare_name_with_slash_raises():
+    with pytest.raises(ValueError):
+        repo_url("a/b")
+
+
+def test_dotdot_raises():
+    with pytest.raises(ValueError):
+        repo_url("..")
+
+
+def test_dot_name_raises():
+    with pytest.raises(ValueError):
+        repo_url(".")
+
+
+def test_my_app_expands_correctly():
+    assert repo_url("my.app") == "git@github.com:gnatpat/my.app.git"
+
+
 def test_clone_then_read_back_the_remote(tmp_path):
     origin = make_origin(tmp_path)
     dest = tmp_path / "work"
