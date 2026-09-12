@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -17,6 +20,12 @@ class ForeignFile(Exception):
 
 class NginxTestFailed(Exception):
     """`nginx -t` rejected the new configuration; nothing was reloaded."""
+
+
+class ReloadFailed(Exception):
+    """A reload command itself failed, as opposed to `nginx -t` rejecting the
+    config. Distinguished from NginxTestFailed so callers can tell "the new
+    config is bad" from "the reload machinery is broken"."""
 
 
 @dataclass(frozen=True)
@@ -61,6 +70,30 @@ def apply_changes(
 ) -> set[str]:
     """Write the changes and perform only the reloads they require.
 
+    The disk is the only record of what systemd/nginx have loaded, so any
+    failure partway through must leave disk and running state consistent
+    with each other — either everything in this call took effect, or nothing
+    did. Concretely:
+
+    - Writes happen first, atomically per file. If one write fails, every
+      write already made in this call is rolled back and the exception is
+      re-raised: no partial write, and no partially-applied change set.
+    - Reloads are ordered nginx -t -> daemon-reload -> reload nginx: `nginx
+      -t` only validates (nothing to undo), `daemon-reload` is cheap and
+      reversible, and reloading nginx is the user-visible, hardest-to-undo
+      step, so it goes last, once everything else has already succeeded.
+    - A failure at `nginx -t` or `daemon-reload` rolls back *all* the
+      changes in this call (not just the nginx ones) before raising, so the
+      files on disk go back to exactly matching what systemd/nginx already
+      have loaded. That is essential: if only some files were rolled back,
+      a later `plan_changes` could find no diff for the ones left in their
+      new state and silently believe they'd already been reloaded, even
+      though systemd/nginx never saw them.
+    - A failure reloading nginx itself happens after `nginx -t` and
+      `daemon-reload` have already succeeded, so there is nothing unsafe
+      left on disk to roll back; it still raises ReloadFailed so the caller
+      knows the reload did not complete.
+
     Returns the set of reload actions performed, for the caller to report.
     """
     if not changes or dry_run:
@@ -74,30 +107,72 @@ def apply_changes(
     touched_units = any(c.path.suffix == UNIT_SUFFIX for c in changes)
     touched_nginx = any(c.path.suffix == NGINX_SUFFIX for c in changes)
 
-    for change in changes:
-        if change.is_removal:
-            change.path.unlink()
-        else:
-            change.path.parent.mkdir(parents=True, exist_ok=True)
-            change.path.write_text(change.after)
+    _write_changes(changes)
 
     actions: set[str] = set()
 
     if touched_nginx:
-        # Validate before reloading; on failure put back exactly what was there
-        # so a broken render cannot take the site down.
+        # Validate before reloading; on failure put back exactly what was
+        # there — for every file this call touched, not only the nginx
+        # ones — so a broken render cannot take the site down, and so the
+        # rolled-back files remain visible to plan_changes as changes still
+        # needing to be applied.
         result = runner.run(["sudo", "nginx", "-t"], check=False)
         if result.returncode != 0:
-            _rollback([c for c in changes if c.path.suffix == NGINX_SUFFIX])
+            _rollback(changes)
             raise NginxTestFailed(result.stderr or "nginx -t failed")
-        runner.run(["sudo", SYSTEMCTL, "reload", "nginx"])
-        actions.add("nginx")
 
     if touched_units:
-        runner.run(["sudo", SYSTEMCTL, "daemon-reload"])
+        try:
+            runner.run(["sudo", SYSTEMCTL, "daemon-reload"])
+        except subprocess.CalledProcessError as e:
+            _rollback(changes)
+            raise ReloadFailed(f"systemctl daemon-reload failed: {e}") from e
         actions.add("daemon-reload")
 
+    if touched_nginx:
+        try:
+            runner.run(["sudo", SYSTEMCTL, "reload", "nginx"])
+        except subprocess.CalledProcessError as e:
+            raise ReloadFailed(f"systemctl reload nginx failed: {e}") from e
+        actions.add("nginx")
+
     return actions
+
+
+def _write_changes(changes: list[Change]) -> None:
+    """Apply every write/removal in `changes`. If any single one fails, undo
+    everything already applied in this call before re-raising, so a
+    mid-batch failure (permissions, disk full) never leaves a partial set of
+    changes on disk."""
+    applied: list[Change] = []
+    try:
+        for change in changes:
+            if change.is_removal:
+                change.path.unlink(missing_ok=True)
+            else:
+                _write_atomically(change.path, change.after)
+            applied.append(change)
+    except OSError:
+        _rollback(applied)
+        raise
+
+
+def _write_atomically(path: Path, content: str) -> None:
+    """Write `content` to `path` without ever leaving a truncated file
+    readable at that path: write to a temp file in the same directory, then
+    atomically (POSIX `rename`) move it onto the target."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
 
 
 def _rollback(changes: list[Change]) -> None:
@@ -105,4 +180,4 @@ def _rollback(changes: list[Change]) -> None:
         if change.before is None:
             change.path.unlink(missing_ok=True)
         else:
-            change.path.write_text(change.before)
+            _write_atomically(change.path, change.before)
