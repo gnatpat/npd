@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from deploy.config import AppConfig, parse_config
-from deploy.gitrepo import clone, head_commit, pull_ff_only, repo_url
+from deploy.gitrepo import clone, head_commit, pull_ff_only, remote_url, repo_url
 from deploy.health import wait_healthy
 from deploy.paths import SYSTEMD_UNIT, Paths
 from deploy.ports import allocate_port, ports_in_use
@@ -52,8 +52,13 @@ def _check_route_free(config: AppConfig, *, paths: Paths) -> None:
 
 
 def _run_build(config: AppConfig, repo: Path, *, runner: Runner) -> None:
-    """Build before anything is written, so a failure leaves the running
-    service untouched."""
+    """Build before anything is rendered, applied, or restarted, so a
+    failure leaves the RUNNING SERVICE untouched — the old code keeps
+    serving. This does not mean nothing has touched disk: _collect_secrets
+    runs before this and may already have written the env file. That is
+    deliberate (see _deploy) — a failed build should not force someone to
+    retype a password they already entered, and missing_secrets correctly
+    skips re-prompting for it on the next run."""
     if not config.build or not config.build.steps:
         return
     workdir = repo / config.build.workdir if config.build.workdir else repo
@@ -146,22 +151,50 @@ def _deploy(
     return 0
 
 
+def _existing_clone(url: str, *, paths: Paths, runner: Runner) -> Path | None:
+    """Find a clone of `url` already under ~/apps, whatever directory it is
+    in. install renames a clone to match [app] name, so on a re-run the
+    directory is not necessarily named after the repo any more."""
+    if not paths.apps.is_dir():
+        return None
+    matches = [
+        d
+        for d in sorted(paths.apps.iterdir())
+        if (d / ".git").is_dir() and remote_url(d, runner=runner) == url
+    ]
+    if len(matches) > 1:
+        raise ValueError(
+            f"{url} is cloned more than once under {paths.apps}: "
+            + ", ".join(str(m) for m in matches)
+            + " — remove the one you do not want"
+        )
+    return matches[0] if matches else None
+
+
 def install(
     name_or_url: str, *, paths: Paths, runner: Runner, prompt: Prompt
 ) -> int:
     url = repo_url(name_or_url)
     repo_name = url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
-    repo = paths.clone_dir(repo_name)
 
-    if not repo.exists():
-        clone(url, repo, runner=runner)
-
-    config, repo = load_app(repo_name, paths=paths, runner=runner)
+    # A clone already renamed to [app] name (by a previous install) will not
+    # be found at ~/apps/<repo_name> any more, so look it up by remote
+    # before assuming it needs cloning — otherwise a second install of an
+    # app whose name differs from its repo clones a duplicate that is never
+    # cleaned up (the hard rule is deploy never deletes a clone).
+    existing = _existing_clone(url, paths=paths, runner=runner)
+    if existing is not None:
+        config, repo = load_app(existing.name, paths=paths, runner=runner)
+    else:
+        repo = paths.clone_dir(repo_name)
+        if not repo.exists():
+            clone(url, repo, runner=runner)
+        config, repo = load_app(repo_name, paths=paths, runner=runner)
 
     # The repo name and the app name can differ (boggle-solver -> boggle). The
     # clone directory must match the app name, because the unit's
     # WorkingDirectory is derived from it.
-    if config.name != repo_name:
+    if config.name != repo.name:
         wanted = paths.clone_dir(config.name)
         if wanted.exists():
             raise ValueError(f"{wanted} already exists; cannot rename {repo}")

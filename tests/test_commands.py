@@ -138,6 +138,24 @@ def test_a_failed_build_aborts_before_writing_anything(tmp_path):
     assert not paths.systemd_unit_file("pokemon").exists()
 
 
+def test_a_failed_build_keeps_the_secret_so_it_need_not_be_retyped(tmp_path):
+    """Secrets are collected before the build runs (so a fatal
+    EnvironmentFile= is never handed to a unit that hasn't got one yet), and
+    that ordering is deliberate even though it means a failed build has
+    already written the env file: retyping a password after a broken build
+    step is exactly the annoyance missing_secrets exists to avoid on the
+    next run."""
+    paths = Paths.under(tmp_path)
+    toml = POKEMON_TOML + '\n[build]\nsteps = ["false"]\n'
+    make_repo(paths, "pokemon", toml)
+    runner = RecordingRunner(results={"false": 1})
+    with pytest.raises(subprocess.CalledProcessError):
+        install("pokemon", paths=paths, runner=runner, prompt=answer("s3cret"))
+    assert not paths.systemd_unit_file("pokemon").exists()
+    assert not paths.nginx_snippet_file("pokemon").exists()
+    assert "COLLECTION_PASSWORD=s3cret" in paths.env_file("pokemon").read_text()
+
+
 def test_a_route_collision_is_refused(tmp_path):
     paths = Paths.under(tmp_path)
     make_repo(paths, "pokemon", POKEMON_TOML)
@@ -218,3 +236,46 @@ def test_a_foreign_unit_is_never_clobbered(tmp_path):
     with pytest.raises(ForeignFile):
         install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
     assert "hand/written" in paths.systemd_unit_file("pokemon").read_text()
+
+
+def test_a_failed_health_check_returns_1_and_leaves_the_service_running(
+    tmp_path, monkeypatch
+):
+    """This is the branch an operator actually hits on a bad deploy: the
+    unit was linked/enabled/started but the app never came up healthy. It
+    must be reported (exit 1, journal tailed) without stopping the service —
+    Restart=always means systemd will keep retrying, and deploy must not
+    make a bad deploy worse by tearing down what's there."""
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    # Overrides the autouse _fake_health_check stub for this test only.
+    monkeypatch.setattr("deploy.commands.wait_healthy", lambda *a, **k: False)
+
+    runner = RecordingRunner()
+    assert install("pokemon", paths=paths, runner=runner, prompt=answer()) == 1
+    assert not runner.ran("systemctl stop")
+    assert runner.ran("journalctl")
+
+
+def test_a_second_install_reuses_a_clone_already_renamed_to_the_app_name(tmp_path):
+    """boggle's repo is boggle-solver but its [app] name is boggle: the
+    first install clones into ~/apps/boggle-solver then renames it to
+    ~/apps/boggle. A second install must find that clone by its remote
+    instead of cloning a fresh, orphaned ~/apps/boggle-solver — deploy never
+    deletes a clone, so a duplicate would sit there forever."""
+    from deploy.gitrepo import repo_url as compute_repo_url
+
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "boggle-solver", STATIC_TOML, static=True)
+    url = compute_repo_url("boggle-solver")
+    runner = RecordingRunner(
+        stdout={"remote get-url origin": url, "rev-parse": "abc123def4567890\n"}
+    )
+
+    assert install("boggle-solver", paths=paths, runner=runner, prompt=answer()) == 0
+    assert paths.clone_dir("boggle").is_dir()
+    assert not paths.clone_dir("boggle-solver").exists()
+
+    assert install("boggle-solver", paths=paths, runner=runner, prompt=answer()) == 0
+    assert not runner.ran("git clone")
+    assert [p.name for p in paths.apps.iterdir()] == ["boggle"]
