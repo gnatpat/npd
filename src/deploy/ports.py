@@ -1,4 +1,5 @@
 import re
+import sys
 
 from deploy.paths import Paths
 
@@ -26,7 +27,7 @@ def ports_in_use(paths: Paths, *, exclude: str | None = None) -> dict[str, int]:
         try:
             text = unit.read_text()
         except (OSError, UnicodeDecodeError) as e:
-            print(f"Warning: skipping unreadable unit {unit.name}: {e}")
+            print(f"Warning: skipping unreadable unit {unit.name}: {e}", file=sys.stderr)
             continue
         match = _PORT_LINE.search(text)
         if match:

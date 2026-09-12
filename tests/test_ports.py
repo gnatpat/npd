@@ -119,7 +119,9 @@ def test_skips_unreadable_units_and_still_reads_good_ones(tmp_path, capsys):
     result = ports_in_use(paths)
     assert result == {"good1": 8200, "good2": 8201}
 
-    # Verify a warning was printed
+    # Verify a warning was printed to stderr, not stdout (stdout is reserved
+    # for machine-readable output elsewhere in the tool)
     captured = capsys.readouterr()
-    assert "Warning" in captured.out
-    assert "bad" in captured.out
+    assert "Warning" in captured.err
+    assert "bad" in captured.err
+    assert captured.out == ""
