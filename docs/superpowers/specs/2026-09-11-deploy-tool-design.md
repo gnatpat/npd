@@ -29,15 +29,14 @@ pulls and redeploys. Nothing else changes about how the box works.
   manual `git checkout` plus `deploy update`.
 - Zero-downtime deploys. Restarts are a `systemctl restart`.
 - A full local mirror of the server. `deploy dev` runs one app and optionally
-  proxies it under its prefix; it does not serve TLS, static files, or the
-  other apps.
+  proxies it under its prefix; it does not serve TLS or any of the other apps.
 
 ## Decisions taken
 
 | Decision | Choice | Why |
 |---|---|---|
 | Platform | Thin homegrown tool over existing systemd + nginx | Dokku/Coolify want to own ports 80/443 and nginx, which collides with the existing static site and live apps. Migration cost exceeds the benefit for a hobby box. |
-| App shapes supported | Python web service, optionally with a frontend build step | The only shapes actually deployed. Static-only sites and background workers are out of scope until they exist. |
+| App shapes supported | Python web service, and static sites | Both are actually deployed today. Background workers remain out of scope until one exists. |
 | Repo resolution | Short name → `git@github.com:gnatpat/<name>.git`; full URLs also accepted | Server already has SSH access to the account, so private repos work with no extra credential handling. |
 | Routing | Path prefix under natpat.net | Matches what is live today. Subdomains remain a possible later change (see Open questions). |
 | Ports | Auto-allocated from 8200–8299, pinnable per app | Removes the need to remember what is where. Pinning lets existing apps migrate without moving. |
@@ -65,7 +64,9 @@ Three layers, with the dependencies pointing one way:
 There is no database and no registry file. The generated unit *is* the record:
 it carries the assigned port as `Environment=PORT=`, and everything else the
 tool reports is read back from git, the filesystem and `systemctl` on demand.
-An app is installed if and only if its unit exists.
+An app is installed if and only if it owns a generated artifact — a unit, an
+nginx snippet, or both. Only services have units, so the port scan reads units
+alone; static apps need no port.
 
 `install`, `update`, `remove` and `diff` are all thin: they change which apps
 exist and with what config, then call reconcile. Reconcile is idempotent — running
@@ -78,6 +79,7 @@ it twice in a row makes no writes the second time and reloads nothing.
 /etc/deploy/env/<name>.env          secrets, mode 0600
 /etc/deploy/systemd/<name>.service  generated unit (nathan-owned)
 /etc/nginx/deploy.d/<name>.conf     generated location block(s)
+/var/www/deploy/<name>              static apps: symlink → <name>-<commit>
 ```
 
 ### One-time server setup
@@ -101,6 +103,7 @@ so the position of the `include` within the server block does not matter.
 ```toml
 [app]
 name = "pokemon"            # optional — defaults to the repo name
+type = "service"            # "service" (default) or "static"
 
 [build]                     # omit entirely if there is nothing to build
 workdir = "pokemon-cards-app"
@@ -222,6 +225,44 @@ Units are registered once per app with `sudo systemctl link
 search path. **Verified on the box, 2026-09-11** (systemd 245, Ubuntu 20.04) —
 see Verified facts below. The `sudo`-plus-`runuser` fallback is not needed.
 
+### Static apps
+
+`type = "static"` has no process, no port, no secrets and no unit. `[build]`
+gains an `output` key naming the directory the build produces:
+
+```toml
+[app]
+name = "boggle"
+type = "static"
+
+[build]
+steps = ["uv run python make_static.py"]
+output = "static"           # relative to the repo root
+
+[nginx]
+path = "/boggle/"
+```
+
+Publishing copies the built output to `/var/www/deploy/<name>-<commit>` and then
+atomically swaps the `/var/www/deploy/<name>` symlink onto it, so a rebuild never
+serves a half-written tree. The previous build is kept, which makes rolling a
+static site back a symlink swap.
+
+Generated nginx:
+
+```nginx
+# Managed by deploy — edits will be overwritten
+location = /boggle { return 301 /boggle/; }
+location /boggle/ {
+    alias /var/www/deploy/boggle/;
+    try_files $uri $uri/ =404;
+}
+```
+
+Preflight rejects `[service]`, `[secrets]` or `strip_prefix` on a static app, and
+requires `build.output`. `deploy dev` for a static app builds and serves the
+output directory locally, honouring `--prefix` the same way.
+
 ## Verified facts
 
 Checked directly on `natpat.net` on 2026-09-11. Ubuntu 20.04, systemd 245,
@@ -266,13 +307,16 @@ deploy dev [--prefix] [--build] [--port N]    run locally, from a repo checkout
 3. Parse `deploy.toml`; fail with a clear message if missing or invalid.
 4. Preflight: name collision, port collision (pinned or allocated), route
    collision. Abort before any mutation.
-5. Allocate a port: scan `/etc/deploy/systemd/*.service` for `Environment=PORT=`,
+5. Allocate a port (services only): scan `/etc/deploy/systemd/*.service` for `Environment=PORT=`,
    take the lowest free port in 8200–8299. Skipped if `[service] port` is pinned.
-6. Prompt for declared secrets; write the env file at 0600.
+6. Prompt for declared secrets; write the env file at 0600. (Services only.)
 7. Run build steps.
-8. Render, diff, apply.
-9. `systemctl link`, `enable`, `start`.
-10. Health check.
+8. For a static app, publish `build.output` to `/var/www/deploy/<name>-<commit>`
+   and swap the symlink.
+9. Render, diff, apply.
+10. `systemctl link`, `enable`, `start`. (Services only.)
+11. Health check. (Services only; a static app is verified by the nginx reload
+    succeeding.)
 
 ### update
 
@@ -325,8 +369,9 @@ dev with real logic:
 The proxy and the nginx renderer are driven by the same `AppConfig`, so
 `strip_prefix` cannot mean one thing locally and another in production.
 
-This is deliberately not a full local mirror: no TLS, no static-file serving,
-no other apps. It exists to catch prefix and header bugs before deploy.
+This is deliberately not a full local mirror: no TLS, no other apps, and no
+nginx behaviour beyond routing and forwarded headers. It exists to catch prefix
+and header bugs before deploy.
 
 ## Failure behaviour
 
@@ -356,6 +401,9 @@ no other apps. It exists to catch prefix and header bugs before deploy.
   and that the managed-header guard refuses to overwrite a foreign file.
 - **Command runner** is injected, so `systemctl`, `git` and build steps are
   recorded rather than executed.
+- **Static publishing:** assert the symlink swap is atomic from the reader's
+  point of view, that the previous build is retained, and that a failed build
+  leaves the live symlink pointing at the last good version.
 - **Port allocator:** given a set of existing unit files, assert it picks the
   lowest free port, skips pinned ports, respects the range bounds, and errors
   clearly when the range is exhausted.
@@ -365,6 +413,52 @@ no other apps. It exists to catch prefix and header bugs before deploy.
   trailing-slash `path`, that forwarded headers match what the nginx renderer
   emits, and that a request outside `path` 404s.
 - **One real smoke test on the box:** migrate pokemon and confirm it serves.
+
+## Inventory
+
+Surveyed 2026-09-11, from the running server and the local checkouts.
+
+| App | Repo | Starts via | Port | Route | `strip_prefix` | Data |
+|---|---|---|---|---|---|---|
+| shogi | `gnatpat/shogi` | `~/shogi/run.sh` → `python2.7 shogi_server.py` | 8008 | `/shogi/` | `true` | — |
+| blog | `gnatpat/blog` | `uv sync`, venv activate, `INSTANCE_PATH=/blog ./run-blog` | 8080 (implicit) | `/blog` | `true` | `/blog`, outside the clone |
+| crochet | `gnatpat/crochet` | `uvicorn server:app` in `server/` | 8152 | `/crochet/` | `true` | `crochet.db` inside the clone |
+| pokemon | `gnatpat/pokemon` | `uvicorn main:app` in `server/`, plus a secret | 8151 | `/pokemon/` | `false` | `collection.db` inside the clone |
+| boggle | `gnatpat/boggle-solver` | `release.sh` scp's `static/*` to the server | — | `/boggle/` | n/a | — |
+| site | `gnatpat/site` | `/site.git` post-receive hook | — | `/` | n/a | `/public_html/www` |
+
+Notes that affect the migration:
+
+- **Repo name, local directory name and route often differ.** `pokemon-cards`
+  locally is `gnatpat/pokemon` on GitHub and `~/pokemon` on the server;
+  `boggle-ocr` locally is `gnatpat/boggle-solver`. `install` resolves the repo
+  name; `[app] name` overrides when the route should differ.
+- **blog's port is implicit.** `waitress-serve` with no `--port` defaults to
+  8080. Its `start` must become `waitress-serve --port=$PORT --call
+  'blog:create_app'`, or the injected port is silently ignored.
+- **blog already keeps data outside the clone** via `INSTANCE_PATH`. That is the
+  pattern for crochet and pokemon to adopt when convenient; the tool does not
+  impose it.
+- **shogi is Python 2.7** with no dependency manifest, so `uv` is not involved.
+  An arbitrary `start` command covers it, but it is the app that breaks when the
+  box moves past Ubuntu 20.04.
+- **`site.service` is vestigial** — disabled, no journal entries, and not how the
+  site deploys. It should be deleted. It is also a trap: `Type=simple` with
+  `Restart=always` around `site.py`, which generates and exits, so starting it
+  would rebuild `/public_html/www` in a loop, `rmtree`-ing the live directory on
+  each pass. Out of scope for migration; the bare-repo hook keeps working.
+
+## Server housekeeping
+
+Found while surveying, unrelated to this tool but recorded so it is not lost:
+
+- **`certbot.service` has been failing daily** (verified 2026-09-12). The cert
+  for natpat.net is valid to 2026-10-22, and renewal normally attempts about 30
+  days out — roughly 2026-09-22. Diagnosis needs root:
+  `sudo certbot renew --dry-run`. If it is still broken by then, the site loses
+  TLS.
+- `fwupd-refresh.service` is also failed; harmless.
+- The `bethany-nathan.wedding` site and `wedding.service` are to be deleted.
 
 ## Migration runbook
 
@@ -391,8 +485,12 @@ steps 3 and 5.
 If step 3 is forgotten, nginx reports a duplicate location and `nginx -t`
 refuses the change before anything goes live. The failure mode is safe.
 
-The static site generator is not migrated. It is served directly by nginx from
-`/public_html` and does not fit this model.
+boggle migrates as a `type = "static"` app, replacing `release.sh`'s scp into
+`/resources/boggle/` and `/public_html/www/boggle/`. Those two copies should be
+removed once the route is served from `/var/www/deploy/boggle`.
+
+The site generator itself is not migrated. It is served directly by nginx from
+`/public_html` via the `/site.git` post-receive hook and keeps working as-is.
 
 ## Open questions
 
@@ -402,11 +500,10 @@ The static site generator is not migrated. It is served directly by nginx from
   remaining fix is per-app subdomains, which needs a wildcard DNS record and a
   wildcard certificate, and would change `[nginx]` to accept `subdomain` as an
   alternative to `path`.
-- **A second domain exists.** The box also serves `bethany-nathan.wedding` from
-  its own nginx site, with a `wedding.service` unit. The `include
-  /etc/nginx/deploy.d/*.conf;` design wires apps into the `natpat.net` server
-  block only, so an app on the wedding domain is out of scope. Supporting it
-  would mean a per-domain include directory and a `domain` key in `[nginx]`.
-  Not needed today; noted so the assumption is explicit.
+- **Single domain only.** `include /etc/nginx/deploy.d/*.conf;` wires apps into
+  the `natpat.net` server block alone. The box also serves
+  `bethany-nathan.wedding`, which is slated for deletion. Supporting a second
+  domain would mean a per-domain include directory and a `domain` key in
+  `[nginx]`.
 - **Secret rotation** has no tooling. Editing `/etc/deploy/env/<app>.env` by hand
   and restarting is the process.
