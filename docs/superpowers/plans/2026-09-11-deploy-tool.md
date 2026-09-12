@@ -10,6 +10,44 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-11-deploy-tool-design.md`
 
+## Status — read this before executing anything
+
+**Tasks 1-8 are implemented and merged.** `src/deploy/` is the source of
+truth, NOT the code in those task sections. Their code blocks are the original
+draft; twenty-three defects were found in review and fixed in the commits, and
+the modules were then refactored. Do not re-implement Tasks 1-8 from this
+document, and do not use their code as a reference for style or API — read the
+source.
+
+**Tasks 9-13 have been updated for the current API.** The refactor changed
+these interfaces; the signatures below are correct as of commit `6bc5035`:
+
+| Before | Now |
+|---|---|
+| `Paths.unit_file(name)` | `Paths.systemd_unit_file(name)` |
+| `Paths.nginx_file(name)` | `Paths.nginx_snippet_file(name)` |
+| `render_unit` / `render_nginx` | `render_systemd_unit` / `render_nginx_snippet` |
+| `render(...) -> dict[Path, str]` | `render(...) -> tuple[Artifact, ...]` |
+| `plan_changes(desired_dict)` | `plan_app_changes(name, artifacts, paths)` |
+| `owned_files(name, paths)` | `owned_artifacts(name, paths) -> list[OwnedArtifact]` |
+| classify by `"systemd" in str(path)` | `change.kind is SYSTEMD_UNIT` |
+| `Environment=PORT=8151` | `Environment="PORT=8151"` (quoted) |
+
+`Artifact(kind, path, contents)` and `OwnedArtifact(kind, path)` both live in
+`deploy.render` / `deploy.reconcile` respectively. `ArtifactKind`,
+`SYSTEMD_UNIT`, `NGINX_SNIPPET` and `ARTIFACT_KINDS` live in `deploy.paths`.
+
+`NginxTestFailed` and `ReloadFailed` now share an `ApplyFailed` base carrying
+`.actions_completed` (reloads that DID take effect before the failure) and
+`.unrestored` (files rollback could not put back). The CLI should catch
+`ApplyFailed` and report both — that is the whole point of their existing.
+
+Config validation is also stricter than when this plan was written: `PORT` and
+`PATH` are reserved in `[env]`/`[secrets]`, ports must be 1024-65535, app names
+must be a single safe path segment, `nginx.path` is character-restricted and
+may not be `/`, and `client_max_body_size` must match `^\d+[kKmMgG]?$`. Every
+value used in Tasks 9-13 below already satisfies these.
+
 ## Global Constraints
 
 - **Python >= 3.11** — required for `tomllib`. The server's system Python is 3.8; `uv` fetches its own interpreter, as it already does for blog (which requires >=3.13).
@@ -828,9 +866,9 @@ def render(config: AppConfig, port: int | None, paths: Paths) -> dict[Path, str]
     if not config.is_static:
         if port is None:
             raise ValueError(f"{config.name} is a service and requires a port")
-        files[paths.unit_file(config.name)] = render_unit(config, port, paths)
+        files[paths.systemd_unit_file(config.name)] = render_unit(config, port, paths)
     if config.nginx is not None:
-        files[paths.nginx_file(config.name)] = render_nginx(config, port, paths)
+        files[paths.nginx_snippet_file(config.name)] = render_nginx(config, port, paths)
     return files
 ```
 
@@ -871,7 +909,7 @@ from deploy.ports import PortExhausted, allocate_port, ports_in_use
 
 def write_unit(paths: Paths, name: str, port: int) -> None:
     paths.units.mkdir(parents=True, exist_ok=True)
-    paths.unit_file(name).write_text(
+    paths.systemd_unit_file(name).write_text(
         "# Managed by deploy — edits will be overwritten\n"
         "[Service]\n"
         f"Environment=PORT={port}\n"
@@ -1116,7 +1154,7 @@ CONF = MANAGED_HEADER + "\nlocation /x/ { proxy_pass http://127.0.0.1:8200/; }\n
 
 
 def desired(paths: Paths) -> dict:
-    return {paths.unit_file("x"): UNIT, paths.nginx_file("x"): CONF}
+    return {paths.systemd_unit_file("x"): UNIT, paths.nginx_snippet_file("x"): CONF}
 
 
 def test_everything_is_a_change_when_nothing_exists(tmp_path):
@@ -1129,8 +1167,8 @@ def test_everything_is_a_change_when_nothing_exists(tmp_path):
 def test_applying_changes_writes_the_files(tmp_path):
     paths = Paths.under(tmp_path)
     apply_changes(plan_changes(desired(paths)), runner=RecordingRunner())
-    assert paths.unit_file("x").read_text() == UNIT
-    assert paths.nginx_file("x").read_text() == CONF
+    assert paths.systemd_unit_file("x").read_text() == UNIT
+    assert paths.nginx_snippet_file("x").read_text() == CONF
 
 
 def test_a_second_identical_run_plans_nothing(tmp_path):
@@ -1152,7 +1190,7 @@ def test_changing_only_the_unit_does_not_reload_nginx(tmp_path):
     paths = Paths.under(tmp_path)
     apply_changes(plan_changes(desired(paths)), runner=RecordingRunner())
     changed = dict(desired(paths))
-    changed[paths.unit_file("x")] = UNIT.replace("8200", "8201")
+    changed[paths.systemd_unit_file("x")] = UNIT.replace("8200", "8201")
     runner = RecordingRunner()
     actions = apply_changes(plan_changes(changed), runner=runner)
     assert actions == {"daemon-reload"}
@@ -1163,7 +1201,7 @@ def test_changing_only_nginx_does_not_daemon_reload(tmp_path):
     paths = Paths.under(tmp_path)
     apply_changes(plan_changes(desired(paths)), runner=RecordingRunner())
     changed = dict(desired(paths))
-    changed[paths.nginx_file("x")] = CONF.replace("8200", "8201")
+    changed[paths.nginx_snippet_file("x")] = CONF.replace("8200", "8201")
     runner = RecordingRunner()
     actions = apply_changes(plan_changes(changed), runner=runner)
     assert actions == {"nginx"}
@@ -1185,18 +1223,18 @@ def test_a_failed_nginx_test_restores_the_previous_content(tmp_path):
     paths = Paths.under(tmp_path)
     apply_changes(plan_changes(desired(paths)), runner=RecordingRunner())
     broken = dict(desired(paths))
-    broken[paths.nginx_file("x")] = MANAGED_HEADER + "\nthis is not nginx\n"
+    broken[paths.nginx_snippet_file("x")] = MANAGED_HEADER + "\nthis is not nginx\n"
     runner = RecordingRunner(results={"nginx -t": 1})
     with pytest.raises(NginxTestFailed):
         apply_changes(plan_changes(broken), runner=runner)
-    assert paths.nginx_file("x").read_text() == CONF
+    assert paths.nginx_snippet_file("x").read_text() == CONF
 
 
 def test_a_failed_nginx_test_does_not_reload(tmp_path):
     paths = Paths.under(tmp_path)
     apply_changes(plan_changes(desired(paths)), runner=RecordingRunner())
     broken = dict(desired(paths))
-    broken[paths.nginx_file("x")] = MANAGED_HEADER + "\nbroken\n"
+    broken[paths.nginx_snippet_file("x")] = MANAGED_HEADER + "\nbroken\n"
     runner = RecordingRunner(results={"nginx -t": 1})
     with pytest.raises(NginxTestFailed):
         apply_changes(plan_changes(broken), runner=runner)
@@ -1206,7 +1244,7 @@ def test_a_failed_nginx_test_does_not_reload(tmp_path):
 def test_a_file_without_the_managed_header_is_never_overwritten(tmp_path):
     paths = Paths.under(tmp_path)
     paths.units.mkdir(parents=True)
-    paths.unit_file("x").write_text("[Service]\nExecStart=/hand/written\n")
+    paths.systemd_unit_file("x").write_text("[Service]\nExecStart=/hand/written\n")
     with pytest.raises(ForeignFile, match="x.service"):
         plan_changes(desired(paths))
 
@@ -1214,17 +1252,17 @@ def test_a_file_without_the_managed_header_is_never_overwritten(tmp_path):
 def test_removal_is_planned_as_a_change_to_none(tmp_path):
     paths = Paths.under(tmp_path)
     apply_changes(plan_changes(desired(paths)), runner=RecordingRunner())
-    changes = plan_changes({}, remove=[paths.unit_file("x"), paths.nginx_file("x")])
+    changes = plan_changes({}, remove=[paths.systemd_unit_file("x"), paths.nginx_snippet_file("x")])
     assert {c.after for c in changes} == {None}
     apply_changes(changes, runner=RecordingRunner())
-    assert not paths.unit_file("x").exists()
+    assert not paths.systemd_unit_file("x").exists()
 
 
 def test_dry_run_writes_nothing_and_runs_nothing(tmp_path):
     paths = Paths.under(tmp_path)
     runner = RecordingRunner()
     apply_changes(plan_changes(desired(paths)), runner=runner, dry_run=True)
-    assert not paths.unit_file("x").exists()
+    assert not paths.systemd_unit_file("x").exists()
     assert runner.calls == []
 ```
 
@@ -2286,6 +2324,8 @@ def resolve_env(
     env = dict(os.environ)
     env.update(config.env)
     env.update({name: dotenv[name] for name in config.secrets})
+    # Safe to set PORT last and unconditionally: config.py reserves PORT and
+    # PATH, so neither [env] nor [secrets] can contain them.
     env["PORT"] = str(port)
     return env
 
@@ -2550,15 +2590,18 @@ def test_install_writes_unit_and_nginx(tmp_path):
     paths = Paths.under(tmp_path)
     make_repo(paths, "pokemon", POKEMON_TOML)
     assert install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer()) == 0
-    assert paths.unit_file("pokemon").exists()
-    assert paths.nginx_file("pokemon").exists()
+    assert paths.systemd_unit_file("pokemon").exists()
+    assert paths.nginx_snippet_file("pokemon").exists()
 
 
 def test_install_honours_the_pinned_port(tmp_path):
     paths = Paths.under(tmp_path)
     make_repo(paths, "pokemon", POKEMON_TOML)
     install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
-    assert "Environment=PORT=8151" in paths.unit_file("pokemon").read_text()
+    assert (
+        'Environment="PORT=8151"'
+        in paths.systemd_unit_file("pokemon").read_text()
+    )
 
 
 def test_install_writes_prompted_secrets_at_0600(tmp_path):
@@ -2586,10 +2629,10 @@ def test_install_is_idempotent(tmp_path):
     paths = Paths.under(tmp_path)
     make_repo(paths, "pokemon", POKEMON_TOML)
     install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
-    before = paths.unit_file("pokemon").read_text()
+    before = paths.systemd_unit_file("pokemon").read_text()
     runner = RecordingRunner()
     install("pokemon", paths=paths, runner=runner, prompt=answer())
-    assert paths.unit_file("pokemon").read_text() == before
+    assert paths.systemd_unit_file("pokemon").read_text() == before
     assert not runner.ran("reload nginx")
 
 
@@ -2599,7 +2642,7 @@ def test_install_of_a_static_app_publishes_and_writes_no_unit(tmp_path):
     runner = RecordingRunner(stdout={"rev-parse": "abc123def4567890\n"})
     assert install("boggle", paths=paths, runner=runner, prompt=answer()) == 0
     assert (paths.static / "boggle-abc123def456").is_dir()
-    assert not paths.unit_file("boggle").exists()
+    assert not paths.systemd_unit_file("boggle").exists()
     assert (paths.static / "boggle" / "index.html").read_text() == "hello"
 
 
@@ -2610,7 +2653,7 @@ def test_a_failed_build_aborts_before_writing_anything(tmp_path):
     runner = RecordingRunner(results={"false": 1})
     with pytest.raises(subprocess.CalledProcessError):
         install("pokemon", paths=paths, runner=runner, prompt=answer())
-    assert not paths.unit_file("pokemon").exists()
+    assert not paths.systemd_unit_file("pokemon").exists()
 
 
 def test_a_route_collision_is_refused(tmp_path):
@@ -2674,12 +2717,12 @@ def test_new_commits_restart_the_service_even_if_the_unit_is_unchanged(tmp_path)
     paths = Paths.under(tmp_path)
     make_repo(paths, "pokemon", POKEMON_TOML)
     install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
-    before = paths.unit_file("pokemon").read_text()
+    before = paths.systemd_unit_file("pokemon").read_text()
 
     runner = MovingRunner()
     update("pokemon", paths=paths, runner=runner, prompt=answer())
 
-    assert paths.unit_file("pokemon").read_text() == before
+    assert paths.systemd_unit_file("pokemon").read_text() == before
     assert runner.ran("systemctl restart")
 
 
@@ -2687,12 +2730,12 @@ def test_a_foreign_unit_is_never_clobbered(tmp_path):
     paths = Paths.under(tmp_path)
     make_repo(paths, "pokemon", POKEMON_TOML)
     paths.units.mkdir(parents=True, exist_ok=True)
-    paths.unit_file("pokemon").write_text("[Service]\nExecStart=/hand/written\n")
+    paths.systemd_unit_file("pokemon").write_text("[Service]\nExecStart=/hand/written\n")
     from deploy.reconcile import ForeignFile
 
     with pytest.raises(ForeignFile):
         install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
-    assert "hand/written" in paths.unit_file("pokemon").read_text()
+    assert "hand/written" in paths.systemd_unit_file("pokemon").read_text()
 ```
 
 Note: `test_update_prompts_only_for_newly_declared_secrets` appends `NEW_SECRET = "another"` to the end of the TOML, which lands in the final `[secrets]` table. That is intentional — it is exactly how a new secret gets added to a real repo.
@@ -2717,9 +2760,9 @@ from typing import Callable
 from deploy.config import AppConfig, parse_config
 from deploy.gitrepo import clone, head_commit, pull_ff_only, repo_url
 from deploy.health import wait_healthy
-from deploy.paths import Paths
+from deploy.paths import SYSTEMD_UNIT, Paths
 from deploy.ports import allocate_port, ports_in_use
-from deploy.reconcile import apply_changes, plan_changes
+from deploy.reconcile import apply_changes, owned_artifacts, plan_app_changes, plan_changes
 from deploy.render import render
 from deploy.runner import Runner
 from deploy.secrets import merge_secrets, missing_secrets, read_env_file
@@ -2817,15 +2860,19 @@ def _deploy(
             paths=paths,
         )
 
-    changes = plan_changes(render(config, port, paths))
+    # plan_app_changes, not plan_changes: it is the only thing that derives
+    # what this app previously owned but no longer wants, so a service that
+    # becomes static (or drops its [nginx] section) has its stale file removed
+    # instead of left on disk holding a port forever.
+    changes = plan_app_changes(config.name, render(config, port, paths), paths)
     apply_changes(changes, runner=runner)
 
     if config.is_static:
         print(f"{config.name}: published")
         return 0
 
-    unit_changed = any("systemd" in str(c.path) for c in changes)
-    unit = paths.unit_file(config.name)
+    unit_changed = any(c.kind is SYSTEMD_UNIT for c in changes)
+    unit = paths.systemd_unit_file(config.name)
 
     if first_install:
         runner.run(["sudo", SYSTEMCTL, "link", str(unit)])
@@ -2871,7 +2918,7 @@ def install(
         repo.rename(wanted)
         repo = wanted
 
-    first = not paths.unit_file(config.name).exists()
+    first = not paths.systemd_unit_file(config.name).exists()
     return _deploy(
         config, repo, paths=paths, runner=runner, prompt=prompt, first_install=first
     )
@@ -2893,7 +2940,11 @@ def update(name: str, *, paths: Paths, runner: Runner, prompt: Prompt) -> int:
     needs_secret = bool(
         missing_secrets(config.secrets, read_env_file(paths.env_file(config.name)))
     )
-    if not moved and not needs_secret and not plan_changes(render(config, port, paths)):
+    if (
+        not moved
+        and not needs_secret
+        and not plan_app_changes(config.name, render(config, port, paths), paths)
+    ):
         print(f"{name}: already up to date")
         return 0
 
@@ -3006,7 +3057,7 @@ def test_diff_writes_nothing(tmp_path):
     make_repo(paths, "pokemon", POKEMON_TOML)
     runner = RecordingRunner()
     assert diff("pokemon", paths=paths, runner=runner) == 0
-    assert not paths.unit_file("pokemon").exists()
+    assert not paths.systemd_unit_file("pokemon").exists()
     assert runner.calls == []
 
 
@@ -3018,8 +3069,8 @@ def test_remove_stops_disables_and_deletes_generated_files(tmp_path):
     remove("pokemon", paths=paths, runner=runner, purge=False, confirm=lambda m: True)
     assert runner.ran("systemctl stop")
     assert runner.ran("systemctl disable")
-    assert not paths.unit_file("pokemon").exists()
-    assert not paths.nginx_file("pokemon").exists()
+    assert not paths.systemd_unit_file("pokemon").exists()
+    assert not paths.nginx_snippet_file("pokemon").exists()
 
 
 def test_remove_keeps_the_clone_and_the_env_file(tmp_path):
@@ -3152,7 +3203,7 @@ def diff(name: str | None, *, paths: Paths, runner: Runner) -> int:
         if not config.is_static:
             assert config.service is not None
             port = allocate_port(paths, name=app, pinned=config.service.port)
-        for change in plan_changes(render(config, port, paths)):
+        for change in plan_app_changes(app, render(config, port, paths), paths):
             any_changes = True
             before = (change.before or "").splitlines(keepends=True)
             after = (change.after or "").splitlines(keepends=True)
@@ -3195,12 +3246,14 @@ def remove(
     purge: bool,
     confirm: Callable[[str], bool],
 ) -> int:
-    unit = paths.unit_file(name)
+    unit = paths.systemd_unit_file(name)
     if unit.exists():
         runner.run(["sudo", SYSTEMCTL, "stop", name], check=False)
         runner.run(["sudo", SYSTEMCTL, "disable", name], check=False)
 
-    changes = plan_changes({}, remove=[unit, paths.nginx_file(name)])
+    # owned_artifacts derives the set from ARTIFACT_KINDS, so a kind added
+    # later is removed here too without editing this function.
+    changes = plan_changes((), remove=owned_artifacts(name, paths))
     apply_changes(changes, runner=runner)
 
     if purge:
@@ -3350,12 +3403,77 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 ```
 
-- [ ] **Step 5: Run the full suite**
+- [ ] **Step 5: Give `main()` top-level error handling**
+
+Every failure below is something a user can cause with a bad `deploy.toml` or
+a broken server state, and none should reach the terminal as a traceback.
+`ApplyFailed` matters most: it carries what *did* take effect before the
+failure, which is exactly what someone needs before deciding whether to re-run.
+
+Rename the existing `main` to `_run`, leaving its body unchanged, and add:
+
+```python
+from deploy.config import ConfigError
+from deploy.gitrepo import DirtyRepo
+from deploy.reconcile import ApplyFailed, ForeignFile
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _run(argv)
+    except ApplyFailed as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        if exc.actions_completed:
+            # The failure happened partway. Say what already took effect, so
+            # the user knows whether the box is in the old state or a mixed one.
+            done = ", ".join(sorted(exc.actions_completed))
+            print(f"  these already took effect: {done}", file=sys.stderr)
+        if exc.unrestored:
+            stuck = ", ".join(str(p) for p in exc.unrestored)
+            print(f"  could not roll back: {stuck} — check by hand", file=sys.stderr)
+        return 1
+    except (ConfigError, ForeignFile, DirtyRepo, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+```
+
+`ValueError` is listed because `repo_url`, `allocate_port` and
+`static.publish` all raise it for bad input with messages already written for
+a human. `subprocess.CalledProcessError` is deliberately NOT caught — a failed
+build step already printed its own output, and the traceback is diagnostic
+rather than noise.
+
+- [ ] **Step 6: Test the error handling**
+
+Append to `tests/test_cli.py`:
+
+```python
+def test_a_config_error_is_reported_without_a_traceback(tmp_path, capsys):
+    from deploy.cli import main
+
+    paths = Paths.under(tmp_path)
+    repo = paths.clone_dir("broken")
+    repo.mkdir(parents=True)
+    (repo / "deploy.toml").write_text('[app]\nname = "broken"\n')  # no [service]
+    assert main(["--root", str(tmp_path), "diff", "broken"]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_apply_failure_carries_what_already_took_effect():
+    from deploy.reconcile import ReloadFailed
+
+    exc = ReloadFailed("reload broke", actions_completed={"daemon-reload"})
+    assert exc.actions_completed == {"daemon-reload"}
+```
+
+- [ ] **Step 7: Run the full suite**
 
 Run: `uv run pytest -v`
 Expected: PASS. Every test from Tasks 1–12.
 
-- [ ] **Step 6: Verify the CLI runs end to end against a fake root**
+- [ ] **Step 8: Verify the CLI runs end to end against a fake root**
 
 ```bash
 mkdir -p /tmp/deploy-check/apps/demo
@@ -3373,7 +3491,7 @@ uv run deploy --root /tmp/deploy-check diff demo
 
 Expected: a unified diff showing the unit and nginx snippet that *would* be written, and nothing created under `/tmp/deploy-check/etc`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/deploy/commands.py src/deploy/cli.py tests/test_cli.py
