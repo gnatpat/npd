@@ -1,4 +1,4 @@
-# `deploy` — a thin deployment tool for natpat.net
+# `npd` — a thin deployment tool for natpat.net
 
 **Status:** approved design, not yet implemented
 **Date:** 2026-09-11
@@ -14,7 +14,7 @@ As the number of apps grows this is increasingly error-prone and tedious.
 
 ## Goal
 
-`deploy install <repo>` on the server does the whole setup. `deploy update <app>`
+`npd install <repo>` on the server does the whole setup. `npd update <app>`
 pulls and redeploys. Nothing else changes about how the box works.
 
 ## Non-goals
@@ -26,9 +26,9 @@ pulls and redeploys. Nothing else changes about how the box works.
   get it created by hand; apps that need a data directory declare a path in
   `[env]` and the owner moves data there per-app.
 - Rollback. A failed deploy leaves the previous process running; recovering is a
-  manual `git checkout` plus `deploy update`.
+  manual `git checkout` plus `npd update`.
 - Zero-downtime deploys. Restarts are a `systemctl restart`.
-- A full local mirror of the server. `deploy dev` runs one app and optionally
+- A full local mirror of the server. `npd dev` runs one app and optionally
   proxies it under its prefix; it does not serve TLS or any of the other apps.
 
 ## Decisions taken
@@ -41,19 +41,19 @@ pulls and redeploys. Nothing else changes about how the box works.
 | Routing | Path prefix under natpat.net | Matches what is live today. Subdomains remain a possible later change (see Open questions). |
 | Ports | Auto-allocated from 8200–8299, pinnable per app | Removes the need to remember what is where. Pinning lets existing apps migrate without moving. |
 | Persistent state | None. The generated unit is the record | Every other fact (repo, route, commit, which apps exist) is derivable from the filesystem and git, and derived state cannot go stale. A separate registry could disagree with the units, and for a reconcile tool there is no principled answer to which wins. |
-| Secrets | `/etc/deploy/env/<app>.env`, mode 0600, never in git | Repos are a mix of public and private; secrets must not depend on that. |
-| Build/start commands | Explicit in `deploy.toml` | Convention-guessing is worse to debug than one line of config. |
+| Secrets | `/etc/npd/env/<app>.env`, mode 0600, never in git | Repos are a mix of public and private; secrets must not depend on that. |
+| Build/start commands | Explicit in `npd.toml` | Convention-guessing is worse to debug than one line of config. |
 | Internal shape | Render + reconcile | Makes the risky part a pure function, so it is testable without a server and `diff`/`--dry-run` come free. |
 | Privileges | Runs as `nathan`; narrow sudoers for `systemctl` and `nginx`; units registered with `systemctl link` | Avoids running the whole tool as root. |
 | Migration of existing apps | Manual runbook, no `adopt` command | Four apps, run once each, then the code would be dead weight. |
-| Local dev | `deploy dev`, with an optional prefix-reproducing proxy | The same config should drive both sides, and prefix bugs must be reproducible off the server. |
+| Local dev | `npd dev`, with an optional prefix-reproducing proxy | The same config should drive both sides, and prefix bugs must be reproducible off the server. |
 | Tool's home | Its own repo, `gnatpat/deploy` | Server tooling should not be coupled to local dotfiles. |
 
 ## Architecture
 
 Three layers, with the dependencies pointing one way:
 
-1. **Config** — parse `deploy.toml` into a validated `AppConfig`. Pure. No IO.
+1. **Config** — parse `npd.toml` into a validated `AppConfig`. Pure. No IO.
 2. **Render** — `(AppConfig, port, paths) → dict[Path, str]`, the complete set of
    generated files and their exact contents. Pure. No IO. This is where the
    systemd unit and nginx snippet text is produced, and where the tests bite.
@@ -75,21 +75,21 @@ it twice in a row makes no writes the second time and reloads nothing.
 ### On-disk layout
 
 ```
-~/apps/<name>/                      git clone, owned by nathan
-/etc/deploy/env/<name>.env          secrets, mode 0600
-/etc/deploy/systemd/<name>.service  generated unit (nathan-owned)
-/etc/nginx/deploy.d/<name>.conf     generated location block(s)
-/var/www/deploy/<name>              static apps: symlink → <name>-<commit>
+~/apps/<name>/                   git clone, owned by nathan
+/etc/npd/env/<name>.env          secrets, mode 0600
+/etc/npd/systemd/<name>.service  generated unit (nathan-owned)
+/etc/nginx/npd.d/<name>.conf     generated location block(s)
+/var/www/npd/<name>              static apps: symlink → <name>-<commit>
 ```
 
 ### One-time server setup
 
-1. Add `include /etc/nginx/deploy.d/*.conf;` inside the existing `natpat.net`
+1. Add `include /etc/nginx/npd.d/*.conf;` inside the existing `natpat.net`
    server block in `/etc/nginx/sites-available/natpat.net`. The tool never
    touches that file again; the static site, `/static/`, error pages and the
    certbot-managed TLS lines stay exactly as they are.
-2. Create `/etc/deploy/` and subdirectories, owned by `nathan`.
-3. Add `/etc/sudoers.d/deploy` permitting, without password:
+2. Create `/etc/npd/` and subdirectories, owned by `nathan`.
+3. Add `/etc/sudoers.d/npd` permitting, without password:
    `systemctl`, `nginx -t`, and reloading nginx.
 4. Install the tool: `uv tool install git+ssh://git@github.com/gnatpat/deploy`.
 
@@ -98,7 +98,7 @@ so the position of the `include` within the server block does not matter.
 
 ## Config format
 
-`deploy.toml`, at the repo root:
+`npd.toml`, at the repo root:
 
 ```toml
 [app]
@@ -121,7 +121,7 @@ path = "/pokemon/"
 strip_prefix = false        # default true; see "Prefix handling" below
 client_max_body_size = "10m"
 
-[dev]                       # optional; local overrides for `deploy dev`
+[dev]                       # optional; local overrides for `npd dev`
 start = "uv run uvicorn main:app --reload --port $PORT"
 
 [env]                       # non-secret, committed
@@ -160,7 +160,7 @@ Rules:
 nginx snippet, for `path = "/pokemon/"` with `strip_prefix = false`:
 
 ```nginx
-# Managed by deploy — edits will be overwritten
+# Managed by npd — edits will be overwritten
 location = /pokemon { return 301 /pokemon/; }
 location /pokemon/ {
     client_max_body_size 10m;
@@ -190,15 +190,15 @@ build correct absolute URLs.
 This is not a cosmetic setting and it is the most likely cause of past trouble
 with `/pokemon`. In the current hand-written config, `/blog` and `/crochet`
 strip, while `/pokemon` alone does not — pokemon is the only app that receives
-its own prefix. **When writing each app's `deploy.toml`, copy
+its own prefix. **When writing each app's `npd.toml`, copy
 whatever that app does today**; changing it silently breaks every route.
 
 systemd unit:
 
 ```ini
-# Managed by deploy — edits will be overwritten
+# Managed by npd — edits will be overwritten
 [Unit]
-Description=pokemon (managed by deploy)
+Description=pokemon (managed by npd)
 After=network.target
 StartLimitIntervalSec=0
 
@@ -208,7 +208,7 @@ User=nathan
 WorkingDirectory=/home/nathan/apps/pokemon/server
 Environment=PATH=/home/nathan/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PORT=8151
-EnvironmentFile=/etc/deploy/env/pokemon.env
+EnvironmentFile=/etc/npd/env/pokemon.env
 ExecStart=/bin/bash -c 'exec uv run uvicorn main:app --host 127.0.0.1 --port $PORT'
 Restart=always
 RestartSec=1
@@ -227,7 +227,7 @@ than closing an open hole — it removes the dependency on a firewall rule stayi
 correct.
 
 Units are registered once per app with `sudo systemctl link
-/etc/deploy/systemd/<name>.service`, which exists for units outside the normal
+/etc/npd/systemd/<name>.service`, which exists for units outside the normal
 search path. **Verified on the box, 2026-09-11** (systemd 245, Ubuntu 20.04) —
 see Verified facts below. The `sudo`-plus-`runuser` fallback is not needed.
 
@@ -249,24 +249,24 @@ output = "static"           # relative to the repo root
 path = "/boggle/"
 ```
 
-Publishing copies the built output to `/var/www/deploy/<name>-<commit>` and then
-atomically swaps the `/var/www/deploy/<name>` symlink onto it, so a rebuild never
+Publishing copies the built output to `/var/www/npd/<name>-<commit>` and then
+atomically swaps the `/var/www/npd/<name>` symlink onto it, so a rebuild never
 serves a half-written tree. The previous build is kept, which makes rolling a
 static site back a symlink swap.
 
 Generated nginx:
 
 ```nginx
-# Managed by deploy — edits will be overwritten
+# Managed by npd — edits will be overwritten
 location = /boggle { return 301 /boggle/; }
 location /boggle/ {
-    alias /var/www/deploy/boggle/;
+    alias /var/www/npd/boggle/;
     try_files $uri $uri/ =404;
 }
 ```
 
 Preflight rejects `[service]`, `[secrets]` or `strip_prefix` on a static app, and
-requires `build.output`. `deploy dev` for a static app builds and serves the
+requires `build.output`. `npd dev` for a static app builds and serves the
 output directory locally, honouring `--prefix` the same way.
 
 ## Verified facts
@@ -282,11 +282,11 @@ nginx 1.18.0, `uv` at `/home/nathan/.local/bin/uv`.
 - **`systemctl` is already passwordless:** `/etc/sudoers.d/site` grants
   `(ALL) NOPASSWD: /usr/bin/systemctl`.
 - **`nginx -t` and reload are not.** They prompt for a password, so
-  `/etc/sudoers.d/deploy` granting them is genuinely required; the tool cannot
+  `/etc/sudoers.d/npd` granting them is genuinely required; the tool cannot
   reconcile nginx until it exists.
 - **`journalctl -u <app>` works as `nathan` with no sudo**, because the units run
   as `User=nathan` and a user can read their own services' logs. `nathan` is in
-  neither `adm` nor `systemd-journal`. `deploy logs` needs no privileges.
+  neither `adm` nor `systemd-journal`. `npd logs` needs no privileges.
 - **Ports in use:** 8080 (blog), 8151 (pokemon), 8152 (crochet), plus 8008 for
   shogi until it is decommissioned — all outside the 8200–8299 allocation
   range, so no migration collides.
@@ -294,16 +294,16 @@ nginx 1.18.0, `uv` at `/home/nathan/.local/bin/uv`.
 ## Commands
 
 ```
-deploy install <name|url>     clone → build → wire up → start
-deploy update <name|--all>    pull → build → apply changes → restart
-deploy list [--fetch]         app, port, route, status, commit; --fetch adds behind-by
-                              (all read live from units, git and systemctl)
-deploy diff [name]            show what would change; writes nothing
-deploy restart <name>
-deploy logs <name> [-f]       journalctl passthrough
-deploy remove <name> [--purge]
+npd install <name|url>     clone → build → wire up → start
+npd update <name|--all>    pull → build → apply changes → restart
+npd list [--fetch]         app, port, route, status, commit; --fetch adds behind-by
+                           (all read live from units, git and systemctl)
+npd diff [name]            show what would change; writes nothing
+npd restart <name>
+npd logs <name> [-f]       journalctl passthrough
+npd remove <name> [--purge]
 
-deploy dev [--prefix] [--build] [--port N]    run locally, from a repo checkout
+npd dev [--prefix] [--build] [--port N]    run locally, from a repo checkout
 ```
 
 ### install
@@ -311,14 +311,14 @@ deploy dev [--prefix] [--build] [--port N]    run locally, from a repo checkout
 1. Resolve the name to a git URL.
 2. Clone to `~/apps/<name>`. If that directory already exists and is a clone of
    the same repo, use it as-is — this is what makes manual migration work.
-3. Parse `deploy.toml`; fail with a clear message if missing or invalid.
+3. Parse `npd.toml`; fail with a clear message if missing or invalid.
 4. Preflight: name collision, port collision (pinned or allocated), route
    collision. Abort before any mutation.
-5. Allocate a port (services only): scan `/etc/deploy/systemd/*.service` for `Environment=PORT=`,
+5. Allocate a port (services only): scan `/etc/npd/systemd/*.service` for `Environment=PORT=`,
    take the lowest free port in 8200–8299. Skipped if `[service] port` is pinned.
 6. Prompt for declared secrets; write the env file at 0600. (Services only.)
 7. Run build steps.
-8. For a static app, publish `build.output` to `/var/www/deploy/<name>-<commit>`
+8. For a static app, publish `build.output` to `/var/www/npd/<name>-<commit>`
    and swap the symlink.
 9. Render, diff, apply.
 10. `systemctl link`, `enable`, `start`. (Services only.)
@@ -339,11 +339,11 @@ deploy dev [--prefix] [--build] [--port N]    run locally, from a repo checkout
 
 ## Local development
 
-`deploy dev` runs an app from a repo checkout on the laptop, using the same
-`deploy.toml` the server uses. No systemd, no nginx, no sudo, no state file — it
+`npd dev` runs an app from a repo checkout on the laptop, using the same
+`npd.toml` the server uses. No systemd, no nginx, no sudo, no state file — it
 reuses only the config layer.
 
-1. Read `./deploy.toml` from the current directory.
+1. Read `./npd.toml` from the current directory.
 2. Resolve environment: `[env]` from the config, plus a gitignored `.env` in the
    repo root supplying `[secrets]` values. If a declared secret is missing,
    fail listing the names and their descriptions rather than starting a process
@@ -390,7 +390,7 @@ and header bugs before deploy.
   The tool reports that the working tree is now ahead of what is running.
 - A failed health check leaves the service up, prints the last 20 journal lines,
   and exits non-zero.
-- Any file missing the `Managed by deploy` header is never overwritten, so a
+- Any file missing the `Managed by npd` header is never overwritten, so a
   hand-written unit cannot be silently clobbered.
 - **The tool never deletes a clone and never runs `git clean`.** App data
   currently lives inside clones. Only `remove --purge` deletes anything, and it
@@ -501,15 +501,15 @@ One at a time, starting with pokemon. Downtime is the gap between
 steps 3 and 5.
 
 0. Check the clone is clean: `cd ~/<app> && git status --porcelain` must print
-   nothing. `deploy update` refuses a dirty tree and counts untracked files as
+   nothing. `npd update` refuses a dirty tree and counts untracked files as
    dirty — deliberately, since live SQLite databases sit inside these clones —
    so an un-gitignored `.db` or `node_modules` blocks every future update.
    Gitignore and commit first.
-1. Add `deploy.toml` to the app's repo with `port` pinned to the port it uses
+1. Add `npd.toml` to the app's repo with `port` pinned to the port it uses
    today, and `strip_prefix` set to match the app's current `proxy_pass` line —
    a trailing slash means `strip_prefix = true`. Getting this wrong breaks every
    route in the app. Today: `/blog` and `/crochet` are `true`,
-   `/pokemon` is `false`. Verify with `deploy dev --prefix` before deploying.
+   `/pokemon` is `false`. Verify with `npd dev --prefix` before deploying.
    Commit and push.
 2. `mv ~/pokemon ~/apps/pokemon` — **move, do not re-clone**, because app data
    currently lives inside the clone.
@@ -517,7 +517,7 @@ steps 3 and 5.
    `/etc/nginx/sites-available/natpat.net`.
 4. `sudo systemctl stop <app> && sudo systemctl disable <app>` and remove
    `/etc/systemd/system/<app>.service`.
-5. `deploy install <app>`.
+5. `npd install <app>`.
 6. Delete the old `~/run-<app>.sh` and `~/update-<app>.sh`.
 7. Move any secret out of the old run script into the prompted env file, and
    rotate it — `COLLECTION_PASSWORD` has been sitting in plaintext.
@@ -527,7 +527,7 @@ refuses the change before anything goes live. The failure mode is safe.
 
 boggle migrates as a `type = "static"` app, replacing `release.sh`'s scp into
 `/resources/boggle/` and `/public_html/www/boggle/`. Those two copies should be
-removed once the route is served from `/var/www/deploy/boggle`.
+removed once the route is served from `/var/www/npd/boggle`.
 
 The site generator itself is not migrated. It is served directly by nginx from
 `/public_html` via the `/site.git` post-receive hook and keeps working as-is.
@@ -536,14 +536,14 @@ The site generator itself is not migrated. It is served directly by nginx from
 
 - **Path-prefix breakage.** Largely addressed: `strip_prefix` makes the
   behaviour explicit per app instead of an accident of a trailing slash, and
-  `deploy dev --prefix` reproduces it locally. If it still causes pain, the
+  `npd dev --prefix` reproduces it locally. If it still causes pain, the
   remaining fix is per-app subdomains, which needs a wildcard DNS record and a
   wildcard certificate, and would change `[nginx]` to accept `subdomain` as an
   alternative to `path`.
-- **Single domain only.** `include /etc/nginx/deploy.d/*.conf;` wires apps into
+- **Single domain only.** `include /etc/nginx/npd.d/*.conf;` wires apps into
   the `natpat.net` server block alone. The box also serves
   `bethany-nathan.wedding`, which is slated for deletion. Supporting a second
   domain would mean a per-domain include directory and a `domain` key in
   `[nginx]`.
-- **Secret rotation** has no tooling. Editing `/etc/deploy/env/<app>.env` by hand
+- **Secret rotation** has no tooling. Editing `/etc/npd/env/<app>.env` by hand
   and restarting is the process.

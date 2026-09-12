@@ -3507,38 +3507,38 @@ This task runs against the live server. Everything before it was testable on a l
 **Files:**
 - Create: `README.md`
 - Create: `bootstrap.sh`
-- Create (in the pokemon repo, not this one): `deploy.toml`
+- Create (in the pokemon repo, not this one): `npd.toml`
 
 **Interfaces:**
 - Consumes: the whole tool.
-- Produces: a working deployment of pokemon managed by `deploy`.
+- Produces: a working deployment of pokemon managed by `npd`.
 
 - [ ] **Step 1: Write `bootstrap.sh`**
 
 ```bash
 #!/bin/bash
-# One-time server setup for deploy. Run as nathan on natpat.net.
+# One-time server setup for npd. Run as nathan on natpat.net.
 # Everything here needs a sudo password once; the tool never does afterwards.
 set -euo pipefail
 
 echo "==> creating directories owned by $USER"
-sudo mkdir -p /etc/deploy/env /etc/deploy/systemd /etc/nginx/deploy.d /var/www/deploy
-sudo chown -R "$USER:$USER" /etc/deploy /etc/nginx/deploy.d /var/www/deploy
-sudo chmod 700 /etc/deploy/env
+sudo mkdir -p /etc/npd/env /etc/npd/systemd /etc/nginx/npd.d /var/www/npd
+sudo chown -R "$USER:$USER" /etc/npd /etc/nginx/npd.d /var/www/npd
+sudo chmod 700 /etc/npd/env
 
 echo "==> granting passwordless nginx test and reload"
 # systemctl is already NOPASSWD via /etc/sudoers.d/site.
-sudo tee /etc/sudoers.d/deploy >/dev/null <<EOF
+sudo tee /etc/sudoers.d/npd >/dev/null <<EOF
 $USER ALL=(ALL) NOPASSWD: /usr/sbin/nginx -t
 $USER ALL=(ALL) NOPASSWD: /usr/sbin/nginx -s reload
 EOF
-sudo chmod 440 /etc/sudoers.d/deploy
-sudo visudo -c -f /etc/sudoers.d/deploy
+sudo chmod 440 /etc/sudoers.d/npd
+sudo visudo -c -f /etc/sudoers.d/npd
 
 echo "==> checking the nginx include"
-if ! grep -q 'include /etc/nginx/deploy.d/' /etc/nginx/sites-available/natpat.net; then
+if ! grep -q 'include /etc/nginx/npd.d/' /etc/nginx/sites-available/natpat.net; then
   echo "MANUAL STEP REQUIRED: add this line inside the natpat.net server block:"
-  echo "        include /etc/nginx/deploy.d/*.conf;"
+  echo "        include /etc/nginx/npd.d/*.conf;"
   exit 1
 fi
 
@@ -3548,22 +3548,22 @@ echo "==> bootstrap complete"
 
 - [ ] **Step 2: Add the nginx include by hand and verify**
 
-On the server, edit `/etc/nginx/sites-available/natpat.net` and add `include /etc/nginx/deploy.d/*.conf;` inside the `server { ... }` block that has `server_name natpat.net www.natpat.net;` and `listen 443`. Then:
+On the server, edit `/etc/nginx/sites-available/natpat.net` and add `include /etc/nginx/npd.d/*.conf;` inside the `server { ... }` block that has `server_name natpat.net www.natpat.net;` and `listen 443`. Then:
 
 Run: `sudo nginx -t && sudo systemctl reload nginx`
-Expected: `syntax is ok` / `test is successful`, and natpat.net still serves. An empty `deploy.d` makes the include a no-op.
+Expected: `syntax is ok` / `test is successful`, and natpat.net still serves. An empty `npd.d` makes the include a no-op.
 
 - [ ] **Step 3: Run the bootstrap and install the tool**
 
 ```bash
 bash bootstrap.sh
 uv tool install git+ssh://git@github.com/gnatpat/deploy
-deploy list
+npd list
 ```
 
-Expected: bootstrap reports complete; `deploy list` prints nothing and exits 0.
+Expected: bootstrap reports complete; `npd list` prints nothing and exits 0.
 
-- [ ] **Step 4: Add `deploy.toml` to the pokemon repo**
+- [ ] **Step 4: Add `npd.toml` to the pokemon repo**
 
 In the pokemon repo (locally, then push). The values come from the spec's Inventory — the port is pinned and `strip_prefix` is `false` because the live `proxy_pass` has no trailing slash:
 
@@ -3615,11 +3615,11 @@ their prefix so `/` is the right probe for them, but confirm rather than assume.
 
 - [ ] **Step 4b: Check the clone is clean, or every future update will fail**
 
-`deploy update` refuses to pull over a dirty tree, and it counts UNTRACKED
+`npd update` refuses to pull over a dirty tree, and it counts UNTRACKED
 files as dirty — deliberately, because live SQLite databases sit inside these
 clones. Run `cd ~/pokemon && git status --porcelain`. If it lists anything (a
 `.db` file, `node_modules`, build output), add it to `.gitignore` and commit
-that first, or every future `deploy update` for this app fails with "has
+that first, or every future `npd update` for this app fails with "has
 uncommitted changes".
 
 - [ ] **Step 5: Verify the prefix behaviour locally before touching the server**
@@ -3628,7 +3628,7 @@ uncommitted changes".
 cd ~/Documents/pokemon-cards
 echo "COLLECTION_PASSWORD=anything" > .env
 grep -q '^\.env$' .gitignore || echo '.env' >> .gitignore
-deploy dev --prefix --build
+npd dev --prefix --build
 ```
 
 Open `http://127.0.0.1:8000/pokemon/` and click through the app. Expected: it behaves as it does in production. If routes 404, `strip_prefix` is wrong — fix it here, not after deploying.
@@ -3640,10 +3640,10 @@ On the server:
 ```bash
 mv ~/pokemon ~/apps/pokemon     # move, do NOT re-clone: collection.db lives inside
 cd ~/apps/pokemon && git pull
-deploy diff pokemon
+npd diff pokemon
 ```
 
-Expected: a diff creating `/etc/deploy/systemd/pokemon.service` and `/etc/nginx/deploy.d/pokemon.conf`. Read the `proxy_pass` line and confirm it matches the live one in `sites-available/natpat.net` exactly, trailing slash included.
+Expected: a diff creating `/etc/npd/systemd/pokemon.service` and `/etc/nginx/npd.d/pokemon.conf`. Read the `proxy_pass` line and confirm it matches the live one in `sites-available/natpat.net` exactly, trailing slash included.
 
 - [ ] **Step 7: Cut over**
 
@@ -3653,10 +3653,10 @@ sudo systemctl disable pokemon
 sudo rm /etc/systemd/system/pokemon.service
 # remove the two `location /pokemon` blocks from sites-available/natpat.net
 sudo nginx -t
-deploy install pokemon
+npd install pokemon
 ```
 
-Expected: `deploy install` prompts for `COLLECTION_PASSWORD`, builds, writes both files, links and starts the unit, and reports `pokemon: healthy on port 8151`.
+Expected: `npd install` prompts for `COLLECTION_PASSWORD`, builds, writes both files, links and starts the unit, and reports `pokemon: healthy on port 8151`.
 
 - [ ] **Step 8: Verify in a browser and clean up**
 
@@ -3664,7 +3664,7 @@ Visit `https://natpat.net/pokemon/`, load a collection, and confirm the upload e
 
 ```bash
 rm ~/run-pokemon.sh ~/update-pokemon.sh
-deploy list
+npd list
 ```
 
 Expected: pokemon listed as active on 8151. **Rotate `COLLECTION_PASSWORD`** — the old value was in a plaintext shell script for months.
@@ -3672,15 +3672,15 @@ Expected: pokemon listed as active on 8151. **Rotate `COLLECTION_PASSWORD`** —
 - [ ] **Step 9: Confirm idempotency on the real box**
 
 ```bash
-deploy update pokemon
-deploy diff pokemon
+npd update pokemon
+npd diff pokemon
 ```
 
 Expected: `already up to date`, then `no changes`. No restart, no reload.
 
 - [ ] **Step 10: Write `README.md` and commit**
 
-`README.md` covers: what the tool does, the `deploy.toml` reference with every key, the commands, the one-time bootstrap, and the migration runbook for the remaining apps (blog, crochet, boggle), pointing at the spec's Inventory for each one's values.
+`README.md` covers: what the tool does, the `npd.toml` reference with every key, the commands, the one-time bootstrap, and the migration runbook for the remaining apps (blog, crochet, boggle), pointing at the spec's Inventory for each one's values.
 
 ```bash
 git add README.md bootstrap.sh
