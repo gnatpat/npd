@@ -28,6 +28,9 @@ pulls and redeploys. Nothing else changes about how the box works.
 - Rollback. A failed deploy leaves the previous process running; recovering is a
   manual `git checkout` plus `deploy update`.
 - Zero-downtime deploys. Restarts are a `systemctl restart`.
+- A full local mirror of the server. `deploy dev` runs one app and optionally
+  proxies it under its prefix; it does not serve TLS, static files, or the
+  other apps.
 
 ## Decisions taken
 
@@ -43,6 +46,7 @@ pulls and redeploys. Nothing else changes about how the box works.
 | Internal shape | Render + reconcile | Makes the risky part a pure function, so it is testable without a server and `diff`/`--dry-run` come free. |
 | Privileges | Runs as `nathan`; narrow sudoers for `systemctl` and `nginx`; units registered with `systemctl link` | Avoids running the whole tool as root. |
 | Migration of existing apps | Manual runbook, no `adopt` command | Four apps, run once each, then the code would be dead weight. |
+| Local dev | `deploy dev`, with an optional prefix-reproducing proxy | The same config should drive both sides, and prefix bugs must be reproducible off the server. |
 | Tool's home | Its own repo, `gnatpat/deploy` | Server tooling should not be coupled to local dotfiles. |
 
 ## Architecture
@@ -106,7 +110,11 @@ health_path = "/"           # optional; GET after restart, must return 2xx
 
 [nginx]                     # omit for an internal-only service
 path = "/pokemon/"
+strip_prefix = false        # default true; see "Prefix handling" below
 client_max_body_size = "10m"
+
+[dev]                       # optional; local overrides for `deploy dev`
+start = "uv run uvicorn main:app --reload --port $PORT"
 
 [env]                       # non-secret, committed
 LOG_LEVEL = "info"
@@ -124,6 +132,9 @@ Rules:
   each value and writes the env file. `update` prompts for any newly declared
   secret not already present, so adding a secret to a repo does not require
   separately remembering to edit a file on the server.
+- `[dev]` overrides `[service]` for local runs only. Absent keys fall back to
+  `[service]`, so a repo with no `[dev]` section runs locally exactly what runs
+  in production.
 - `[env]` entries become `Environment=` lines in the generated unit;
   `[secrets]` values go to the env file loaded via `EnvironmentFile`. A name
   appearing in both is a config error caught by preflight.
@@ -132,7 +143,7 @@ Rules:
 
 ## Generated output
 
-nginx snippet, for `path = "/pokemon/"`:
+nginx snippet, for `path = "/pokemon/"` with `strip_prefix = false`:
 
 ```nginx
 # Managed by deploy — edits will be overwritten
@@ -143,11 +154,30 @@ location /pokemon/ {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-Prefix /pokemon/;
-    proxy_pass http://127.0.0.1:8151/;
+    proxy_pass http://127.0.0.1:8151;
 }
 ```
 
 The redirect block is emitted only when `path` ends in `/`.
+
+### Prefix handling
+
+`strip_prefix` controls one character of output — the trailing slash on
+`proxy_pass` — and it changes what the app receives:
+
+| `strip_prefix` | generated | request `/pokemon/cards` arrives as |
+|---|---|---|
+| `true` (default) | `proxy_pass http://127.0.0.1:PORT/;` | `/cards` |
+| `false` | `proxy_pass http://127.0.0.1:PORT;` | `/pokemon/cards` |
+
+`X-Forwarded-Prefix` is sent in both cases, so an app that strips can still
+build correct absolute URLs.
+
+This is not a cosmetic setting and it is the most likely cause of past trouble
+with `/pokemon`. In the current hand-written config, `/blog`, `/shogi` and
+`/crochet` all strip, while `/pokemon` alone does not — pokemon is the only app
+that receives its own prefix. **When writing each app's `deploy.toml`, copy
+whatever that app does today**; changing it silently breaks every route.
 
 systemd unit:
 
@@ -196,6 +226,8 @@ deploy diff [name]            show what would change; writes nothing
 deploy restart <name>
 deploy logs <name> [-f]       journalctl passthrough
 deploy remove <name> [--purge]
+
+deploy dev [--prefix] [--build] [--port N]    run locally, from a repo checkout
 ```
 
 ### install
@@ -226,6 +258,48 @@ deploy remove <name> [--purge]
    if a snippet changed.
 7. Health check.
 
+## Local development
+
+`deploy dev` runs an app from a repo checkout on the laptop, using the same
+`deploy.toml` the server uses. No systemd, no nginx, no sudo, no state file — it
+reuses only the config layer.
+
+1. Read `./deploy.toml` from the current directory.
+2. Resolve environment: `[env]` from the config, plus a gitignored `.env` in the
+   repo root supplying `[secrets]` values. If a declared secret is missing,
+   fail listing the names and their descriptions rather than starting a process
+   that will die confusingly later.
+3. Run `[build] steps` only when `--build` is passed. Builds are slow and rarely
+   needed between runs; the first run of a repo with a frontend needs it.
+4. Run `[dev] start` if present, otherwise `[service] start`, in the foreground
+   from the appropriate `workdir`. Ctrl-C terminates the child cleanly.
+
+Ports: the app binds `$PORT`, default 8000. Production port assignments live in
+the server's state file and are irrelevant locally.
+
+### `--prefix`
+
+Serving the app bare on `localhost:8000` is precisely the environment where
+prefix bugs hide, so `--prefix` reproduces what nginx does in production. The
+app is started on an internal ephemeral port and a small reverse proxy listens
+on `$PORT` instead, so the browser URL is the same in both modes.
+
+The proxy mirrors the generated snippet exactly, and is the only part of local
+dev with real logic:
+
+- `GET /pokemon` → 301 `/pokemon/`, when `path` ends in `/`.
+- Requests under `path` are forwarded, stripping the prefix or not according to
+  `strip_prefix`.
+- Sets `Host`, `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Prefix`
+  with the same values nginx sends.
+- Anything outside `path` returns 404, as it would on the server.
+
+The proxy and the nginx renderer are driven by the same `AppConfig`, so
+`strip_prefix` cannot mean one thing locally and another in production.
+
+This is deliberately not a full local mirror: no TLS, no static-file serving,
+no other apps. It exists to catch prefix and header bugs before deploy.
+
 ## Failure behaviour
 
 - Preflight runs before any mutation. Bad config, port clash or route clash
@@ -254,6 +328,11 @@ deploy remove <name> [--purge]
   and that the managed-header guard refuses to overwrite a foreign file.
 - **Command runner** is injected, so `systemctl`, `git` and build steps are
   recorded rather than executed.
+- **Local proxy:** tested against a stub upstream that echoes the path and
+  headers it received. Assert that `strip_prefix = true` and `false` deliver the
+  paths in the Prefix handling table, that the redirect fires only for a
+  trailing-slash `path`, that forwarded headers match what the nginx renderer
+  emits, and that a request outside `path` 404s.
 - **One real smoke test on the box:** migrate pokemon and confirm it serves.
 
 ## Migration runbook
@@ -262,7 +341,11 @@ Per app, one at a time, starting with pokemon. Downtime is the gap between
 steps 3 and 5.
 
 1. Add `deploy.toml` to the app's repo with `port` pinned to the port it uses
-   today. Commit and push.
+   today, and `strip_prefix` set to match the app's current `proxy_pass` line —
+   a trailing slash means `strip_prefix = true`. Getting this wrong breaks every
+   route in the app. Today: `/blog`, `/shogi` and `/crochet` are `true`,
+   `/pokemon` is `false`. Verify with `deploy dev --prefix` before deploying.
+   Commit and push.
 2. `mv ~/pokemon ~/apps/pokemon` — **move, do not re-clone**, because app data
    currently lives inside the clone.
 3. Remove the app's `location` blocks from
@@ -282,11 +365,11 @@ The static site generator is not migrated. It is served directly by nginx from
 
 ## Open questions
 
-- **Path-prefix breakage.** Apps must cope with being served under a prefix, and
-  pokemon has had trouble with this. Not blocking — the generated snippet
-  reproduces what works today, including `X-Forwarded-Prefix`. If prefix
-  handling keeps causing pain, the fix is to move to per-app subdomains, which
-  needs a wildcard DNS record and a wildcard certificate, and would change
-  `[nginx]` to accept `subdomain` as an alternative to `path`.
+- **Path-prefix breakage.** Largely addressed: `strip_prefix` makes the
+  behaviour explicit per app instead of an accident of a trailing slash, and
+  `deploy dev --prefix` reproduces it locally. If it still causes pain, the
+  remaining fix is per-app subdomains, which needs a wildcard DNS record and a
+  wildcard certificate, and would change `[nginx]` to accept `subdomain` as an
+  alternative to `path`.
 - **Secret rotation** has no tooling. Editing `/etc/deploy/env/<app>.env` by hand
   and restarting is the process.
