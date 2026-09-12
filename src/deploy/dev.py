@@ -69,7 +69,18 @@ def run_dev(
         workdir = repo / config.build.workdir if config.build.workdir else repo
         for step in config.build.steps:
             print(f"[build] {step}")
-            runner.run(shlex.split(step), cwd=workdir, env=env)
+            # As with the static branch below: this is a long-running
+            # foreground step the user watches, not one whose output the
+            # tool should consume. runner.run (RealRunner) sets
+            # capture_output=True, which would swallow it and leave the
+            # terminal silent until a bare failure. Use subprocess.call
+            # directly, as commands._run_build does for the same reason,
+            # and raise CalledProcessError ourselves so a failed build step
+            # still stops `deploy dev --build` instead of continuing on to
+            # run the app against a half-built tree.
+            returncode = subprocess.call(shlex.split(step), cwd=workdir, env=env)
+            if returncode != 0:
+                raise subprocess.CalledProcessError(returncode, step)
 
     if config.is_static:
         output = repo / config.build.output

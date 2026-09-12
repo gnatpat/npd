@@ -1,3 +1,4 @@
+import re
 import subprocess
 
 import pytest
@@ -98,13 +99,18 @@ def test_install_writes_prompted_secrets_at_0600(tmp_path):
 
 
 def test_install_links_enables_and_starts_the_unit(tmp_path):
+    """A single `restart` replaces the old start/restart split: it starts a
+    never-started unit exactly as well as it restarts a running one (see
+    CRITICAL 1 in the final review — the old start/restart split, gated on
+    first_install, is what let a retry after a partial failure register
+    nothing with systemd while still reporting success)."""
     paths = Paths.under(tmp_path)
     make_repo(paths, "pokemon", POKEMON_TOML)
     runner = RecordingRunner()
     install("pokemon", paths=paths, runner=runner, prompt=answer())
     assert runner.ran("systemctl link")
     assert runner.ran("systemctl enable")
-    assert runner.ran("systemctl start")
+    assert runner.ran("systemctl restart")
 
 
 def test_install_is_idempotent(tmp_path):
@@ -116,6 +122,34 @@ def test_install_is_idempotent(tmp_path):
     install("pokemon", paths=paths, runner=runner, prompt=answer())
     assert paths.systemd_unit_file("pokemon").read_text() == before
     assert not runner.ran("reload nginx")
+
+
+def test_a_retry_after_a_partial_failure_still_registers_and_restarts(tmp_path):
+    """CRITICAL 1's regression test. apply_changes writes the unit file
+    before link/enable/restart run, so a failure at any of those points
+    (here, `systemctl enable` failing -- e.g. systemd refusing to enable
+    over a stale unmanaged file from a missed migration step) leaves the
+    unit file already in place on disk by the time the operator retries.
+    Under the old code, first_install was computed from that file's
+    existence, so the retry saw first_install=False, plan_app_changes found
+    no diff, and link/enable/start were skipped entirely -- registering
+    nothing with systemd while still printing success. Both attempts must
+    actually run link/enable/restart."""
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+
+    failing = RecordingRunner(results={"systemctl enable": 1})
+    with pytest.raises(subprocess.CalledProcessError):
+        install("pokemon", paths=paths, runner=failing, prompt=answer())
+    assert failing.ran("systemctl link")
+    assert failing.ran("systemctl enable")
+    assert paths.systemd_unit_file("pokemon").exists()
+
+    retry = RecordingRunner()
+    assert install("pokemon", paths=paths, runner=retry, prompt=answer()) == 0
+    assert retry.ran("systemctl link")
+    assert retry.ran("systemctl enable")
+    assert retry.ran("systemctl restart")
 
 
 def test_install_of_a_static_app_publishes_and_writes_no_unit(tmp_path):
@@ -136,6 +170,42 @@ def test_a_failed_build_aborts_before_writing_anything(tmp_path):
     with pytest.raises(subprocess.CalledProcessError):
         install("pokemon", paths=paths, runner=runner, prompt=answer())
     assert not paths.systemd_unit_file("pokemon").exists()
+
+
+def test_build_steps_stream_to_the_terminal_instead_of_going_through_runner(
+    tmp_path, monkeypatch
+):
+    """IMPORTANT 3: a build step (npm install, a compiler...) can run for
+    minutes, and its output is for the operator to watch live, not for this
+    tool to consume. Going through Runner (RealRunner sets
+    capture_output=True) would swallow it, leaving silence followed by a
+    bare failure message with no diagnosis. _run_build must use
+    subprocess.call directly, like logs() and the journal tail, and must
+    not touch Runner for the build steps themselves."""
+    paths = Paths.under(tmp_path)
+    toml = POKEMON_TOML + '\n[build]\nsteps = ["echo hi"]\n'
+    make_repo(paths, "pokemon", toml)
+
+    calls = []
+    monkeypatch.setattr(
+        "deploy.commands.subprocess.call",
+        lambda argv, **kw: calls.append(argv) or 0,
+    )
+    runner = RecordingRunner()
+    assert install("pokemon", paths=paths, runner=runner, prompt=answer()) == 0
+    assert calls == [["echo", "hi"]]
+    assert not runner.ran("echo hi")
+
+
+def test_a_failing_build_step_raises_a_called_process_error(tmp_path):
+    """The build no longer goes through Runner (which used to raise
+    CalledProcessError itself via check=True), so _run_build must raise it
+    manually on a non-zero exit for the existing failure handling to fire."""
+    paths = Paths.under(tmp_path)
+    toml = POKEMON_TOML + '\n[build]\nsteps = ["false"]\n'
+    make_repo(paths, "pokemon", toml)
+    with pytest.raises(subprocess.CalledProcessError):
+        install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
 
 
 def test_a_failed_build_keeps_the_secret_so_it_need_not_be_retyped(tmp_path):
@@ -177,6 +247,90 @@ def test_update_with_no_changes_reports_up_to_date_and_does_not_restart(tmp_path
     assert not runner.ran("systemctl restart")
 
 
+def test_update_with_the_same_commit_still_reports_up_to_date(tmp_path):
+    """Pins CRITICAL 2's idempotence requirement: stamping DEPLOY_COMMIT
+    into the unit must not turn every update into "something changed" —
+    only a genuine commit change should. Uses a real-looking, non-empty sha
+    (RecordingRunner's unconfigured default is "", which is falsy and would
+    trivially pass this) held fixed across both calls."""
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    sha = "abc123def4567890abc123def4567890abc123d"
+    install(
+        "pokemon",
+        paths=paths,
+        runner=RecordingRunner(stdout={"rev-parse": f"{sha}\n"}),
+        prompt=answer(),
+    )
+    before = paths.systemd_unit_file("pokemon").read_text()
+    assert f"DEPLOY_COMMIT={sha}" in before
+
+    runner = RecordingRunner(stdout={"rev-parse": f"{sha}\n"})
+    assert update("pokemon", paths=paths, runner=runner, prompt=answer()) == 0
+    assert paths.systemd_unit_file("pokemon").read_text() == before
+    assert not runner.ran("systemctl restart")
+
+
+class OneTimeMoveRunner(RecordingRunner):
+    """Simulates a real repo more faithfully than MovingRunner (used
+    elsewhere in this file): `rev-parse HEAD` returns `before` exactly once,
+    then `after` forever afterwards — as a single real `git pull` would
+    move HEAD from `before` to `after` and leave it there, rather than
+    advancing on every single call."""
+
+    def __init__(self, before: str, after: str):
+        super().__init__()
+        self._shas = [before] + [after] * 20
+
+    def run(self, argv, *, cwd=None, env=None, check=True):
+        argv = list(argv)
+        if "rev-parse" in " ".join(argv):
+            self.calls.append(argv)
+            sha = self._shas.pop(0) if len(self._shas) > 1 else self._shas[0]
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{sha}\n", stderr="")
+        return super().run(argv, cwd=cwd, env=env, check=check)
+
+
+def test_a_failed_build_followed_by_a_clean_update_redeploys(tmp_path):
+    """CRITICAL 2's regression test. A build failing after a successful
+    pull must not be indistinguishable from "nothing to do": the unit on
+    disk still carries the OLD commit, so a later update -- even one that
+    finds nothing new to pull, because the earlier pull already happened --
+    must see the stamped commit disagree with HEAD and redeploy, not print
+    "already up to date" while the process keeps running the old code."""
+    paths = Paths.under(tmp_path)
+    repo = make_repo(paths, "pokemon", POKEMON_TOML)
+    install(
+        "pokemon",
+        paths=paths,
+        runner=RecordingRunner(stdout={"rev-parse": "sha1\n"}),
+        prompt=answer(),
+    )
+    assert "DEPLOY_COMMIT=sha1" in paths.systemd_unit_file("pokemon").read_text()
+
+    # Simulate: new commits land (HEAD moves from sha1 to sha2) and the
+    # build then fails.
+    (repo / "deploy.toml").write_text(POKEMON_TOML + '\n[build]\nsteps = ["false"]\n')
+    with pytest.raises(subprocess.CalledProcessError):
+        update(
+            "pokemon",
+            paths=paths,
+            runner=OneTimeMoveRunner("sha1", "sha2"),
+            prompt=answer(),
+        )
+    # Nothing was deployed: the unit on disk still says sha1.
+    assert "DEPLOY_COMMIT=sha1" in paths.systemd_unit_file("pokemon").read_text()
+
+    # Fix the build and retry. pull_ff_only now finds nothing new (HEAD is
+    # already sha2 and stays there) -- but the commit stamped on disk (sha1)
+    # still disagrees with HEAD (sha2), so this must redeploy.
+    (repo / "deploy.toml").write_text(POKEMON_TOML)
+    runner = RecordingRunner(stdout={"rev-parse": "sha2\n"})
+    assert update("pokemon", paths=paths, runner=runner, prompt=answer()) == 0
+    assert "DEPLOY_COMMIT=sha2" in paths.systemd_unit_file("pokemon").read_text()
+    assert runner.ran("systemctl restart")
+
+
 def test_update_prompts_only_for_newly_declared_secrets(tmp_path):
     paths = Paths.under(tmp_path)
     repo = make_repo(paths, "pokemon", POKEMON_TOML)
@@ -213,7 +367,18 @@ class MovingRunner(RecordingRunner):
         return super().run(argv, cwd=cwd, env=env, check=check)
 
 
-def test_new_commits_restart_the_service_even_if_the_unit_is_unchanged(tmp_path):
+_COMMIT_LINE = re.compile(r'Environment="DEPLOY_COMMIT=[^"]+"\n')
+
+
+def test_new_commits_restart_and_update_the_stamped_commit(tmp_path):
+    """New commits must still force a restart even when nothing in
+    deploy.toml changed -- the running process is executing the old code
+    until it is restarted. Under the CRITICAL 2 fix the unit is no longer
+    byte-identical in this case (its DEPLOY_COMMIT stamp moves forward,
+    which is exactly the mechanism that fix relies on to detect a stale
+    deploy later), so this pins "unchanged except for the commit stamp"
+    rather than "byte-identical", which is what this test used to assert
+    before that fix existed."""
     paths = Paths.under(tmp_path)
     make_repo(paths, "pokemon", POKEMON_TOML)
     install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
@@ -221,8 +386,11 @@ def test_new_commits_restart_the_service_even_if_the_unit_is_unchanged(tmp_path)
 
     runner = MovingRunner()
     update("pokemon", paths=paths, runner=runner, prompt=answer())
+    after = paths.systemd_unit_file("pokemon").read_text()
 
-    assert paths.systemd_unit_file("pokemon").read_text() == before
+    assert after != before
+    assert _COMMIT_LINE.search(after)
+    assert _COMMIT_LINE.sub("", after) == _COMMIT_LINE.sub("", before)
     assert runner.ran("systemctl restart")
 
 
@@ -290,3 +458,77 @@ def test_a_second_install_reuses_a_clone_already_renamed_to_the_app_name(tmp_pat
     assert install("boggle-solver", paths=paths, runner=runner, prompt=answer()) == 0
     assert not runner.ran("git clone")
     assert [p.name for p in paths.apps.iterdir()] == ["boggle"]
+
+
+def test_existing_clone_matches_an_https_origin_against_an_ssh_url(tmp_path):
+    """IMPORTANT 6. A clone whose origin is https (e.g. left over from a
+    manual migration) must still be recognised as the same repo as the ssh
+    URL this tool generates -- otherwise install clones a duplicate that
+    the rename guard then refuses, leaving an orphan."""
+    from deploy.commands import _existing_clone
+
+    paths = Paths.under(tmp_path)
+    repo = paths.clone_dir("boggle-solver")
+    repo.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    runner = RecordingRunner(
+        stdout={"remote get-url origin": "https://github.com/gnatpat/boggle-solver.git\n"}
+    )
+
+    found = _existing_clone(
+        "git@github.com:gnatpat/boggle-solver.git", paths=paths, runner=runner
+    )
+    assert found == repo
+
+
+def test_existing_clone_skips_a_directory_with_no_origin_remote(tmp_path):
+    """IMPORTANT 6. A git repo under ~/apps with no `origin` configured must
+    not abort install for an unrelated reason -- it is simply not a match."""
+    from deploy.commands import _existing_clone
+
+    paths = Paths.under(tmp_path)
+    repo = paths.clone_dir("no-origin")
+    repo.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    runner = RecordingRunner(results={"no-origin remote get-url": 1})
+
+    found = _existing_clone(
+        "git@github.com:gnatpat/whatever.git", paths=paths, runner=runner
+    )
+    assert found is None
+
+
+def test_remove_of_a_never_installed_app_reports_nothing_and_exits_nonzero(
+    tmp_path, capsys
+):
+    """MINOR 7. A typo'd app name must be visible, not silently reported as
+    "removed" with exit 0."""
+    from deploy.commands import remove
+
+    paths = Paths.under(tmp_path)
+    assert remove(
+        "nope", paths=paths, runner=RecordingRunner(), purge=False, confirm=lambda m: True
+    ) == 1
+    assert "nothing to remove" in capsys.readouterr().err
+
+
+def test_purge_of_a_static_app_deletes_the_published_build_output(tmp_path):
+    """MINOR 7. --purge of a static app must also clean up
+    /var/www/deploy/<name> (the live symlink) and its versioned build
+    directories -- otherwise they are left behind forever, since nothing
+    else garbage-collects them."""
+    from deploy.commands import remove
+
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "boggle", STATIC_TOML, static=True)
+    runner = RecordingRunner(stdout={"rev-parse": "abc123def4567890\n"})
+    install("boggle", paths=paths, runner=runner, prompt=answer())
+    assert (paths.static / "boggle").is_symlink()
+    assert (paths.static / "boggle-abc123def456").is_dir()
+
+    remove("boggle", paths=paths, runner=RecordingRunner(), purge=True, confirm=lambda m: True)
+
+    assert not (paths.static / "boggle").exists()
+    assert not (paths.static / "boggle").is_symlink()
+    assert not (paths.static / "boggle-abc123def456").exists()
+    assert not paths.clone_dir("boggle").exists()

@@ -146,3 +146,29 @@ def test_percent_in_start_command_is_escaped_for_systemd():
     )
     out = render_systemd_unit(cfg, 8000, PATHS)
     assert "ExecStart=/bin/bash -c 'exec serve --fmt %%H'\n" in out
+
+
+def test_commit_is_stamped_right_after_port_when_given():
+    out = unit()  # unit()'s default port=8151, no commit passed -> None
+    assert "DEPLOY_COMMIT" not in out
+    out = render_systemd_unit(
+        parse_config(POKEMON, repo_name="pokemon"), 8151, PATHS, commit="a" * 40
+    )
+    assert f'Environment="PORT=8151"\nEnvironment="DEPLOY_COMMIT={"a" * 40}"\n' in out
+
+
+def test_no_commit_line_when_commit_is_none_or_empty():
+    out = render_systemd_unit(
+        parse_config(POKEMON, repo_name="pokemon"), 8151, PATHS, commit=None
+    )
+    assert "DEPLOY_COMMIT" not in out
+    out = render_systemd_unit(
+        parse_config(POKEMON, repo_name="pokemon"), 8151, PATHS, commit=""
+    )
+    assert "DEPLOY_COMMIT" not in out
+
+
+def test_render_forwards_commit_into_the_unit():
+    artifacts = render(parse_config(POKEMON, repo_name="pokemon"), 8151, PATHS, "b" * 40)
+    (unit_artifact,) = [a for a in artifacts if a.kind is SYSTEMD_UNIT]
+    assert f'DEPLOY_COMMIT={"b" * 40}' in unit_artifact.contents

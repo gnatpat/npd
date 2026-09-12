@@ -1,5 +1,6 @@
 import argparse
 import getpass
+import subprocess
 import sys
 from pathlib import Path
 
@@ -10,6 +11,20 @@ from deploy.gitrepo import DirtyRepo
 from deploy.paths import Paths, app_name_error
 from deploy.reconcile import ApplyFailed, ForeignFile
 from deploy.runner import RealRunner
+
+# Every exception a single-app command can let escape, other than
+# KeyboardInterrupt: `update --all` catches the same set per app (see below)
+# so one broken app cannot abort the rest, and main() catches it once more
+# for everything that is not --all.
+_COMMAND_ERRORS = (
+    ApplyFailed,
+    ConfigError,
+    ForeignFile,
+    DirtyRepo,
+    ValueError,
+    OSError,
+    subprocess.CalledProcessError,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -90,18 +105,27 @@ def _run(argv: list[str] | None = None) -> int:
         )
 
     if args.command == "update":
-        names = (
-            commands.installed_apps(paths) if args.all else [args.name]
-        )
-        if not names or names == [None]:
-            print("give an app name or --all", file=sys.stderr)
-            return 2
         if not args.all:
+            if args.name is None:
+                print("give an app name or --all", file=sys.stderr)
+                return 2
             _validated(args.name)
-        return max(
-            commands.update(n, paths=paths, runner=runner, prompt=_prompt)
-            for n in names
-        )
+            return commands.update(args.name, paths=paths, runner=runner, prompt=_prompt)
+
+        # One broken app must not stop every other app from updating: unlike
+        # a single named update (whose failure is left to propagate to
+        # main()), each app's errors are caught here so the loop always
+        # reaches the rest of the list -- the same hardening list_apps
+        # already has via status_of.
+        failed = False
+        for n in commands.installed_apps(paths):
+            try:
+                if commands.update(n, paths=paths, runner=runner, prompt=_prompt) != 0:
+                    failed = True
+            except _COMMAND_ERRORS as exc:
+                print(f"error: {n}: {exc}", file=sys.stderr)
+                failed = True
+        return 1 if failed else 0
 
     if args.command == "list":
         for app in commands.list_apps(paths=paths, runner=runner, fetch=args.fetch):
@@ -169,6 +193,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except (ConfigError, ForeignFile, DirtyRepo, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as exc:
+        # A missing SSH key on `git clone`, a `systemctl` refusal, a failed
+        # build -- all raise this, and all are first-run-shaped failures an
+        # operator needs a clean message for, not a Python traceback.
+        cmd = exc.cmd if isinstance(exc.cmd, str) else " ".join(str(c) for c in exc.cmd)
+        print(f"error: `{cmd}` failed (exit {exc.returncode})", file=sys.stderr)
+        if exc.stderr:
+            # Only a captured command (RealRunner) has this; one that
+            # streamed straight to the terminal (build steps, journalctl,
+            # the dev server) already showed its own output live.
+            print(exc.stderr.strip(), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

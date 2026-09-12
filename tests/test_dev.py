@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from pathlib import Path
 
@@ -103,3 +104,29 @@ def test_static_dev_serves_with_sys_executable_not_a_bare_python(monkeypatch):
     argv = calls[0]
     assert argv[0] == sys.executable
     assert argv[1:4] == ["-m", "http.server", "8000"]
+
+
+def test_build_steps_stream_via_subprocess_call_not_runner(monkeypatch):
+    """IMPORTANT 3's second site: the build loop had the same
+    output-swallowing problem as commands._run_build -- a long build step's
+    output must reach the terminal live, not be captured by Runner and
+    discarded."""
+    c = cfg('[service]\nstart = "run"\n[build]\nsteps = ["echo hi"]\n')
+    calls = []
+    monkeypatch.setattr(
+        "deploy.dev.subprocess.call",
+        lambda argv, **kw: calls.append(argv) or 0,
+    )
+    runner = RecordingRunner()
+    run_dev(c, Path("/repo"), port=8000, build=True, prefix=False, runner=runner)
+    assert calls[0] == ["echo", "hi"]
+    assert not runner.ran("echo hi")
+
+
+def test_a_failing_build_step_raises_instead_of_continuing_to_run_the_app(monkeypatch):
+    """A failed build step must stop `deploy dev --build`, not fall through
+    to running the app against a half-built tree."""
+    c = cfg('[service]\nstart = "run"\n[build]\nsteps = ["false"]\n')
+    monkeypatch.setattr("deploy.dev.subprocess.call", lambda argv, **kw: 1)
+    with pytest.raises(subprocess.CalledProcessError):
+        run_dev(c, Path("/repo"), port=8000, build=True, prefix=False, runner=RecordingRunner())

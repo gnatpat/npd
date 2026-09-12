@@ -57,3 +57,28 @@ def live_target(name: str, paths: Paths) -> Path | None:
     if not link.is_symlink():
         return None
     return paths.static / os.readlink(link)
+
+
+def published_paths(name: str, paths: Paths) -> list[Path]:
+    """Every path under paths.static this app owns: the live symlink (or
+    stray directory of that exact name) plus every versioned build
+    directory `publish` left behind for it.
+
+    The live entry is matched by exact name; a build directory is matched
+    by the exact `<name>-<hex commit>` shape `publish` creates, not merely a
+    `<name>-` prefix -- a bare prefix would also catch a sibling app's own
+    live directory (e.g. "boggle" matching "boggle-admin"), which is a
+    completely different app, not one of "boggle"'s old builds."""
+    if not paths.static.is_dir():
+        return []
+    owned: list[Path] = []
+    live = paths.static / name
+    if live.exists() or live.is_symlink():
+        owned.append(live)
+    build_dir = re.compile(rf"^{re.escape(name)}-[0-9a-f]+$")
+    owned += sorted(
+        p
+        for p in paths.static.iterdir()
+        if p.is_dir() and not p.is_symlink() and build_dir.match(p.name)
+    )
+    return owned

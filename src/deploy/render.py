@@ -88,6 +88,7 @@ _UNIT_TEMPLATE = (
     "WorkingDirectory={workdir}\n"
     'Environment="PATH={unit_path}"\n'
     'Environment="PORT={port}"\n'
+    "{commit_line}"
     "{var_block}"
     "ExecStart=/bin/bash -c 'exec {start}'\n"
     "Restart=always\n"
@@ -98,8 +99,17 @@ _UNIT_TEMPLATE = (
 )
 
 
-def render_systemd_unit(config: AppConfig, port: int, paths: Paths) -> str:
-    """The systemd unit for one service. Pure: no IO, no subprocess."""
+def render_systemd_unit(
+    config: AppConfig, port: int, paths: Paths, commit: str | None = None
+) -> str:
+    """The systemd unit for one service. Pure: no IO, no subprocess.
+
+    `commit` (when given) is stamped in as DEPLOY_COMMIT, right after PORT.
+    There is no state file recording what the running process was built
+    from, so the unit itself is the only place that can carry it — without
+    it, a build that fails after a `git pull` leaves no way to tell that the
+    running code and the checked-out commit have diverged (see
+    commands.update)."""
     if config.is_static:
         raise ValueError(f"{config.name} is static and has no unit")
     if config.service is None:
@@ -108,6 +118,8 @@ def render_systemd_unit(config: AppConfig, port: int, paths: Paths) -> str:
     workdir = paths.clone_dir(config.name)
     if config.service.workdir:
         workdir = workdir / config.service.workdir
+
+    commit_line = f'Environment="DEPLOY_COMMIT={commit}"\n' if commit else ""
 
     env_lines = "".join(
         f'Environment="{key}={_escape_unit_percent(config.env[key])}"\n'
@@ -125,16 +137,21 @@ def render_systemd_unit(config: AppConfig, port: int, paths: Paths) -> str:
         workdir=workdir,
         unit_path=UNIT_PATH,
         port=port,
+        commit_line=commit_line,
         var_block=var_block,
         start=start,
     )
 
 
-def render(config: AppConfig, port: int | None, paths: Paths) -> tuple[Artifact, ...]:
+def render(
+    config: AppConfig, port: int | None, paths: Paths, commit: str | None = None
+) -> tuple[Artifact, ...]:
     """Every file this app owns, as a tuple of Artifacts.
 
     This is the whole of the tool's desired state. Reconcile diffs it against
-    disk; nothing else decides what gets written.
+    disk; nothing else decides what gets written. `commit` is forwarded to
+    render_systemd_unit for a service; it has no effect on a static app's
+    nginx snippet.
     """
     artifacts: list[Artifact] = []
     if not config.is_static:
@@ -144,7 +161,7 @@ def render(config: AppConfig, port: int | None, paths: Paths) -> tuple[Artifact,
             Artifact(
                 SYSTEMD_UNIT,
                 paths.systemd_unit_file(config.name),
-                render_systemd_unit(config, port, paths),
+                render_systemd_unit(config, port, paths, commit),
             )
         )
     if config.nginx is not None:

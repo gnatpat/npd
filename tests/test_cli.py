@@ -1,3 +1,5 @@
+import subprocess
+
 import pytest
 
 from deploy.cli import build_parser
@@ -257,3 +259,78 @@ def test_list_continues_past_a_broken_apps_config(tmp_path):
     assert apps["pokemon"].error is None
     assert apps["broken"].route is None
     assert apps["broken"].error is not None
+
+
+def test_a_called_process_error_is_reported_without_a_traceback(monkeypatch, capsys):
+    """IMPORTANT 4: a missing SSH key on `git clone`, a `systemctl` refusal,
+    a failed build -- all raise CalledProcessError, and all are first-run
+    shaped failures that must print a clean message, not a Python
+    traceback."""
+    from deploy.cli import main
+
+    def _boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            7, ["git", "clone", "bad"], output="", stderr="Host key verification failed.\n"
+        )
+
+    monkeypatch.setattr("deploy.cli.commands.diff", _boom)
+    assert main(["diff", "pokemon"]) == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "exit 7" in err
+    assert "Host key verification failed" in err
+
+
+def test_a_called_process_error_with_no_captured_stderr_still_reports_cleanly(
+    monkeypatch, capsys
+):
+    """A streamed command (build steps, journalctl) never has exc.stderr;
+    the handler must not choke on that, and must not print an empty line."""
+    from deploy.cli import main
+
+    def _boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, ["false"])
+
+    monkeypatch.setattr("deploy.cli.commands.diff", _boom)
+    assert main(["diff", "pokemon"]) == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "exit 1" in err
+
+
+def test_update_all_continues_past_a_broken_app_and_reports_failure(
+    tmp_path, capsys, monkeypatch
+):
+    """IMPORTANT 5: `update --all` used to abort the whole loop via
+    `max(<generator>)` on the first app to raise -- a DirtyRepo or
+    ConfigError from one app must not silently skip updating the rest."""
+    from deploy.cli import main
+
+    # Route RealRunner to RecordingRunner so the healthy app's git/systemctl
+    # calls never touch the real system.
+    monkeypatch.setattr("deploy.cli.RealRunner", RecordingRunner)
+
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
+
+    broken = paths.clone_dir("broken")
+    broken.mkdir(parents=True)
+    (broken / "deploy.toml").write_text('[app]\nname = "broken"\n')  # no [service]
+    paths.units.mkdir(parents=True, exist_ok=True)
+    paths.systemd_unit_file("broken").write_text("not a real unit")
+
+    rc = main(["--root", str(tmp_path), "update", "--all"])
+
+    assert rc != 0
+    out, err = capsys.readouterr()
+    assert "error: broken:" in err
+    assert "pokemon: already up to date" in out
+
+
+def test_update_all_with_no_installed_apps_succeeds(tmp_path):
+    """max() over an empty generator used to raise ValueError; an explicit
+    loop over zero apps should just do nothing and succeed."""
+    from deploy.cli import main
+
+    assert main(["--root", str(tmp_path), "update", "--all"]) == 0

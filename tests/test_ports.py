@@ -80,6 +80,21 @@ def test_exhausted_range_raises(tmp_path):
         allocate_port(paths, name="new")
 
 
+def test_ports_in_use_is_unconfused_by_a_deploy_commit_line(tmp_path):
+    """CRITICAL 2 adds a second Environment= line (DEPLOY_COMMIT) right
+    after PORT's. Confirm _PORT_LINE still matches only the PORT line and
+    is not thrown off by it being followed by another Environment= line."""
+    paths = Paths.under(tmp_path)
+    paths.units.mkdir(parents=True, exist_ok=True)
+    paths.systemd_unit_file("pokemon").write_text(
+        "# Managed by deploy — edits will be overwritten\n"
+        "[Service]\n"
+        'Environment="PORT=8151"\n'
+        'Environment="DEPLOY_COMMIT=abcabcabcabcabcabcabcabcabcabcabcabcabca"\n'
+    )
+    assert ports_in_use(paths) == {"pokemon": 8151}
+
+
 def test_ports_in_use_with_actual_render_systemd_unit_output(tmp_path):
     """Ensure regex matches quoted form from render_systemd_unit, not just hand-built fixtures."""
     paths = Paths.under(tmp_path)
@@ -95,7 +110,7 @@ start = "python app.py"
 """
 
     config = parse_config(toml_text, repo_name="test")
-    unit_text = render_systemd_unit(config, 8250, paths)
+    unit_text = render_systemd_unit(config, 8250, paths, commit="c" * 40)
     paths.systemd_unit_file("web").write_text(unit_text)
 
     # Verify the regex matches the quoted form

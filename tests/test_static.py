@@ -1,7 +1,7 @@
 import pytest
 
 from deploy.paths import Paths
-from deploy.static import live_target, publish
+from deploy.static import live_target, publish, published_paths
 
 
 def build(tmp_path, content: str):
@@ -85,6 +85,29 @@ def test_rejects_static_dir_as_a_regular_file(tmp_path):
 
     with pytest.raises(ValueError, match="is a regular file"):
         publish(build(tmp_path, "v1"), name="boggle", commit="aaa", paths=paths)
+
+
+def test_published_paths_finds_the_live_link_and_every_build_dir(tmp_path):
+    paths = Paths.under(tmp_path)
+    publish(build(tmp_path, "v1"), name="boggle", commit="aaa", paths=paths)
+    publish(build(tmp_path, "v2"), name="boggle", commit="bbb", paths=paths)
+    found = {p.name for p in published_paths("boggle", paths)}
+    assert found == {"boggle", "boggle-aaa", "boggle-bbb"}
+
+
+def test_published_paths_does_not_match_a_similarly_prefixed_app(tmp_path):
+    """MINOR 7's care requirement: --purge must only ever touch paths for
+    the exact app being removed, never a differently-named one that merely
+    shares a prefix."""
+    paths = Paths.under(tmp_path)
+    publish(build(tmp_path, "v1"), name="boggle", commit="aaa", paths=paths)
+    publish(build(tmp_path, "v1"), name="boggle-admin", commit="bbb", paths=paths)
+    found = {p.name for p in published_paths("boggle", paths)}
+    assert found == {"boggle", "boggle-aaa"}
+
+
+def test_published_paths_is_empty_when_nothing_is_published(tmp_path):
+    assert published_paths("boggle", Paths.under(tmp_path)) == []
 
 
 def test_non_hex_commit_is_rejected_before_touching_the_filesystem(tmp_path):
