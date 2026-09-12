@@ -240,3 +240,148 @@ def update(name: str, *, paths: Paths, runner: Runner, prompt: Prompt) -> int:
         first_install=False,
         code_changed=moved,
     )
+
+
+@dataclass(frozen=True)
+class AppStatus:
+    name: str
+    port: int | None
+    route: str | None
+    active: str
+    commit: str
+    behind: int | None = None
+
+
+def status_of(
+    name: str, *, paths: Paths, runner: Runner, fetch: bool = False
+) -> AppStatus:
+    port = ports_in_use(paths).get(name)
+    route = None
+    config_file = paths.clone_dir(name) / "deploy.toml"
+    if config_file.exists():
+        config = parse_config(config_file.read_text(), repo_name=name)
+        route = config.nginx.path if config.nginx else None
+
+    active = "unknown"
+    if port is not None:
+        result = runner.run(
+            ["sudo", SYSTEMCTL, "is-active", name], check=False
+        )
+        active = (result.stdout or "").strip() or "unknown"
+
+    commit = ""
+    behind = None
+    repo = paths.clone_dir(name)
+    if (repo / ".git").exists():
+        commit = head_commit(repo, runner=runner)[:8]
+        if fetch:
+            behind = _commits_behind(repo, runner=runner)
+
+    return AppStatus(
+        name=name,
+        port=port,
+        route=route,
+        active=active,
+        commit=commit,
+        behind=behind,
+    )
+
+
+def _commits_behind(repo: Path, *, runner: Runner) -> int | None:
+    """How many commits origin is ahead by. None when there is no upstream."""
+    runner.run(["git", "-C", str(repo), "fetch", "--quiet"], check=False)
+    result = runner.run(
+        ["git", "-C", str(repo), "rev-list", "--count", "HEAD..@{u}"], check=False
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return int((result.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+def list_apps(*, paths: Paths, runner: Runner, fetch: bool = False) -> list[AppStatus]:
+    return [
+        status_of(n, paths=paths, runner=runner, fetch=fetch)
+        for n in installed_apps(paths)
+    ]
+
+
+def diff(name: str | None, *, paths: Paths, runner: Runner) -> int:
+    """Show what would change. Writes nothing and runs nothing."""
+    names = [name] if name else installed_apps(paths)
+    any_changes = False
+    for app in names:
+        config, _ = load_app(app, paths=paths, runner=runner)
+        port = None
+        if not config.is_static:
+            assert config.service is not None
+            port = allocate_port(paths, name=app, pinned=config.service.port)
+        for change in plan_app_changes(app, render(config, port, paths), paths):
+            any_changes = True
+            before = (change.before or "").splitlines(keepends=True)
+            after = (change.after or "").splitlines(keepends=True)
+            print(
+                "".join(
+                    difflib.unified_diff(
+                        before, after, f"a{change.path}", f"b{change.path}"
+                    )
+                )
+            )
+    if not any_changes:
+        print("no changes")
+    return 0
+
+
+def restart(name: str, *, paths: Paths, runner: Runner) -> int:
+    runner.run(["sudo", SYSTEMCTL, "restart", name])
+    config, _ = load_app(name, paths=paths, runner=runner)
+    port = ports_in_use(paths).get(name)
+    if port is None:
+        return 0
+    health_path = config.service.health_path if config.service else None
+    return 0 if wait_healthy(port, health_path) else 1
+
+
+def logs(name: str, *, follow: bool, runner: Runner) -> int:
+    argv = ["journalctl", "-u", name, "-n", "50"]
+    if follow:
+        argv.append("-f")
+    else:
+        argv.append("--no-pager")
+    return runner.run(argv, check=False).returncode
+
+
+def remove(
+    name: str,
+    *,
+    paths: Paths,
+    runner: Runner,
+    purge: bool,
+    confirm: Callable[[str], bool],
+) -> int:
+    unit = paths.systemd_unit_file(name)
+    if unit.exists():
+        runner.run(["sudo", SYSTEMCTL, "stop", name], check=False)
+        runner.run(["sudo", SYSTEMCTL, "disable", name], check=False)
+
+    # owned_artifacts derives the set from ARTIFACT_KINDS, so a kind added
+    # later is removed here too without editing this function.
+    changes = plan_changes((), remove=owned_artifacts(name, paths))
+    apply_changes(changes, runner=runner)
+
+    if purge:
+        targets = [paths.clone_dir(name), paths.env_file(name)]
+        existing = [t for t in targets if t.exists()]
+        listing = "\n".join(f"  {t}" for t in existing)
+        if not existing or not confirm(f"permanently delete:\n{listing}\n"):
+            print("keeping the clone and env file")
+            return 0
+        for target in existing:
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+    print(f"{name}: removed")
+    return 0
