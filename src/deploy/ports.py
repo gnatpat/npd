@@ -23,7 +23,12 @@ def ports_in_use(paths: Paths, *, exclude: str | None = None) -> dict[str, int]:
         name = unit.stem
         if name == exclude:
             continue
-        match = _PORT_LINE.search(unit.read_text())
+        try:
+            text = unit.read_text()
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"Warning: skipping unreadable unit {unit.name}: {e}")
+            continue
+        match = _PORT_LINE.search(text)
         if match:
             found[name] = int(match.group(1))
     return found

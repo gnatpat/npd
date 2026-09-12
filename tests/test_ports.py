@@ -100,3 +100,26 @@ start = "python app.py"
 
     # Verify the regex matches the quoted form
     assert ports_in_use(paths) == {"web": 8250}
+
+
+def test_skips_unreadable_units_and_still_reads_good_ones(tmp_path, capsys):
+    """FINDING 3: unreadable file should not abort the scan."""
+    paths = Paths.under(tmp_path)
+    paths.units.mkdir(parents=True, exist_ok=True)
+
+    # Write two good units
+    write_unit(paths, "good1", 8200)
+    write_unit(paths, "good2", 8201)
+
+    # Create an unreadable file with invalid UTF-8 bytes
+    bad_unit = paths.unit_file("bad")
+    bad_unit.write_bytes(b"\xff\xfe invalid utf-8")
+
+    # Should still read the good ports and skip the bad one with a warning
+    result = ports_in_use(paths)
+    assert result == {"good1": 8200, "good2": 8201}
+
+    # Verify a warning was printed
+    captured = capsys.readouterr()
+    assert "Warning" in captured.out
+    assert "bad" in captured.out

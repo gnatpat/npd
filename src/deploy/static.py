@@ -14,6 +14,19 @@ def publish(source: Path, *, name: str, commit: str, paths: Paths) -> Path:
     if not source.is_dir():
         raise FileNotFoundError(f"build output {source} does not exist")
 
+    # Check that paths.static can exist as a directory
+    if paths.static.exists() and not paths.static.is_dir():
+        raise ValueError(
+            f"{paths.static} is a regular file; must be a directory for static publishing"
+        )
+
+    # Check that the live link name is not currently a real directory
+    live_path = paths.static / name
+    if live_path.exists() and not live_path.is_symlink():
+        raise ValueError(
+            f"{live_path} is a real directory; move it aside or delete it to publish"
+        )
+
     paths.static.mkdir(parents=True, exist_ok=True)
     target = paths.static / f"{name}-{commit}"
     if target.exists():

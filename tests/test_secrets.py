@@ -57,3 +57,42 @@ def test_merge_keeps_permissions_tight(tmp_path):
     write_env_file(path, {"OLD": "keep"})
     merge_secrets(path, {"NEW": "added"})
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_trailing_spaces_in_value_are_preserved(tmp_path):
+    """FINDING 1: value with trailing spaces must round-trip exactly."""
+    path = tmp_path / "a.env"
+    write_env_file(path, {"KEY": "hunter2   "})
+    assert read_env_file(path)["KEY"] == "hunter2   "
+
+
+def test_trailing_tab_in_value_is_preserved(tmp_path):
+    """FINDING 1: value with trailing tab must round-trip exactly."""
+    path = tmp_path / "a.env"
+    write_env_file(path, {"KEY": "value\t"})
+    assert read_env_file(path)["KEY"] == "value\t"
+
+
+def test_leading_spaces_in_value_are_preserved(tmp_path):
+    """FINDING 1: value with leading spaces must round-trip exactly."""
+    path = tmp_path / "a.env"
+    write_env_file(path, {"KEY": "   value"})
+    assert read_env_file(path)["KEY"] == "   value"
+
+
+def test_value_containing_equals_sign_is_preserved(tmp_path):
+    """FINDING 1: value containing = (e.g. a=b=c) must round-trip exactly."""
+    path = tmp_path / "a.env"
+    write_env_file(path, {"KEY": "a=b=c"})
+    assert read_env_file(path)["KEY"] == "a=b=c"
+
+
+def test_tightens_permissions_on_existing_world_readable_file(tmp_path):
+    """FINDING 2: file created at 0644 should be tightened to 0600."""
+    path = tmp_path / "a.env"
+    # Pre-create file at world-readable permissions
+    path.write_text("OLD=value\n")
+    path.chmod(0o644)
+    # Write via write_env_file should tighten permissions
+    write_env_file(path, {"NEW": "secret"})
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600

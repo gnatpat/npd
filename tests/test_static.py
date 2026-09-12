@@ -63,3 +63,25 @@ def test_a_missing_build_output_is_an_error_and_leaves_live_alone(tmp_path):
     with pytest.raises(FileNotFoundError):
         publish(tmp_path / "nope", name="boggle", commit="bbb", paths=paths)
     assert (paths.static / "boggle" / "index.html").read_text() == "v1"
+
+
+def test_rejects_live_name_as_a_real_directory(tmp_path):
+    """FINDING 4: live name pre-existing as directory should raise with clear error."""
+    paths = Paths.under(tmp_path)
+    # Pre-create the live name as a real directory
+    live_dir = paths.static / "boggle"
+    live_dir.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="is a real directory"):
+        publish(build(tmp_path, "v1"), name="boggle", commit="aaa", paths=paths)
+
+
+def test_rejects_static_dir_as_a_regular_file(tmp_path):
+    """FINDING 4: paths.static as regular file should raise with clear error."""
+    paths = Paths.under(tmp_path)
+    # Pre-create paths.static as a regular file
+    paths.static.parent.mkdir(parents=True, exist_ok=True)
+    paths.static.write_text("not a directory")
+
+    with pytest.raises(ValueError, match="is a regular file"):
+        publish(build(tmp_path, "v1"), name="boggle", commit="aaa", paths=paths)
