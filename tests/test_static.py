@@ -85,3 +85,15 @@ def test_rejects_static_dir_as_a_regular_file(tmp_path):
 
     with pytest.raises(ValueError, match="is a regular file"):
         publish(build(tmp_path, "v1"), name="boggle", commit="aaa", paths=paths)
+
+
+def test_non_hex_commit_is_rejected_before_touching_the_filesystem(tmp_path):
+    paths = Paths.under(tmp_path)
+    with pytest.raises(ValueError, match="not a valid hex string"):
+        publish(
+            build(tmp_path, "v1"),
+            name="boggle",
+            commit="../../etc/evil",
+            paths=paths,
+        )
+    assert not paths.static.exists()

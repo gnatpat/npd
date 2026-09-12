@@ -4,6 +4,13 @@ from deploy.config import AppConfig
 from deploy.paths import MANAGED_HEADER, Paths
 
 
+def _escape_unit_percent(value: str) -> str:
+    """Escape systemd's '%' specifier syntax so a literal '%' in a value (an
+    env var, a start command) round-trips instead of being expanded (e.g.
+    '%H' -> hostname) or, for a trailing bare '%', failing unit parsing."""
+    return value.replace("%", "%%")
+
+
 def render_nginx(config: AppConfig, port: int | None, paths: Paths) -> str:
     """The location block(s) for one app. Pure: no IO, no subprocess."""
     if config.nginx is None:
@@ -70,11 +77,13 @@ def render_unit(config: AppConfig, port: int, paths: Paths) -> str:
         f"Environment=\"PORT={port}\"",
     ]
     for key in sorted(config.env):
-        lines.append(f'Environment="{key}={config.env[key]}"')
+        value = _escape_unit_percent(config.env[key])
+        lines.append(f'Environment="{key}={value}"')
     if config.secrets:
         lines.append(f"EnvironmentFile={paths.env_file(config.name)}")
+    start = _escape_unit_percent(config.service.start)
     lines += [
-        f"ExecStart=/bin/bash -c 'exec {config.service.start}'",
+        f"ExecStart=/bin/bash -c 'exec {start}'",
         "Restart=always",
         "RestartSec=1",
         "",

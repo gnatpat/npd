@@ -5,6 +5,11 @@ from typing import Any
 
 VALID_TYPES = ("service", "static")
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+NGINX_PATH_PATTERN = re.compile(r"^[A-Za-z0-9/_.~-]+$")
+BODY_SIZE_PATTERN = re.compile(r"^\d+[kKmMgG]?$")
+RESERVED_ENV_KEYS = ("PORT", "PATH")
+MIN_UNPRIVILEGED_PORT = 1024
+MAX_PORT = 65535
 
 
 def _has_invalid_chars(value: str) -> str | None:
@@ -115,12 +120,28 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
             f"app.type must be one of {', '.join(VALID_TYPES)}, got {app_type!r}"
         )
 
-    name = app.get("name") or repo_name
+    name_field = app.get("name")
+    if name_field is not None:
+        _string(name_field, "name", "app")
+    name = name_field or repo_name
     _validate_app_name(name)
     env_table = _table(raw, "env")
     env = {str(k): str(v) for k, v in env_table.items()}
     secrets_table = _table(raw, "secrets")
     secrets = {str(k): str(v) for k, v in secrets_table.items()}
+
+    for key in env:
+        if key in RESERVED_ENV_KEYS:
+            raise ConfigError(
+                f"{key!r} may not be set in [env]; PORT is assigned by deploy "
+                "and PATH is set explicitly in the generated unit"
+            )
+    for key in secrets:
+        if key in RESERVED_ENV_KEYS:
+            raise ConfigError(
+                f"{key!r} may not be set in [secrets]; PORT is assigned by deploy "
+                "and PATH is set explicitly in the generated unit"
+            )
 
     # Validate env and secrets for invalid characters
     for key, value in env.items():
@@ -162,6 +183,16 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
 
     dev = _table(raw, "dev")
     dev_start = dev.get("start")
+    if dev_start is not None:
+        dev_start = _string(dev_start, "start", "dev")
+        if "'" in dev_start:
+            raise ConfigError(
+                "dev.start may not contain a single quote; it is embedded the same "
+                "way service.start is when it runs"
+            )
+        invalid = _has_invalid_chars(dev_start)
+        if invalid:
+            raise ConfigError(f"dev.start contains {invalid}")
 
     return AppConfig(
         name=name,
@@ -208,6 +239,15 @@ def _parse_service(raw: dict[str, Any] | None) -> ServiceConfig:
     if port is not None:
         if isinstance(port, bool) or not isinstance(port, int):
             raise ConfigError(f"service.port must be an integer, got {type(port).__name__}")
+        if port < MIN_UNPRIVILEGED_PORT:
+            raise ConfigError(
+                f"service.port {port} is below {MIN_UNPRIVILEGED_PORT}; privileged "
+                "ports are not allowed since services run as a normal user"
+            )
+        if port > MAX_PORT:
+            raise ConfigError(
+                f"service.port {port} is above the maximum valid port {MAX_PORT}"
+            )
     return ServiceConfig(
         start=start,
         workdir=str(raw.get("workdir", "")),
@@ -227,6 +267,11 @@ def _parse_nginx(raw: dict[str, Any] | None, app_type: str) -> NginxConfig | Non
             'nginx.path may not be "/" — the site root is served by the static site, '
             "not by a managed app"
         )
+    if not NGINX_PATH_PATTERN.match(path):
+        raise ConfigError(
+            f"nginx.path {path!r} contains invalid characters; "
+            "it may only contain letters, digits, and / - _ . ~"
+        )
     if app_type == "static" and "strip_prefix" in raw:
         raise ConfigError("strip_prefix is meaningless for a static app")
     if app_type == "static" and not path.endswith("/"):
@@ -234,8 +279,14 @@ def _parse_nginx(raw: dict[str, Any] | None, app_type: str) -> NginxConfig | Non
             f'a static app\'s nginx.path must end with "/" (got {path!r})'
         )
     size = raw.get("client_max_body_size")
+    size_str = str(size) if size is not None else None
+    if size_str is not None and not BODY_SIZE_PATTERN.match(size_str):
+        raise ConfigError(
+            f"nginx.client_max_body_size {size_str!r} is invalid; it must be digits "
+            "optionally followed by a single k, m, or g (e.g. '10m')"
+        )
     return NginxConfig(
         path=path,
         strip_prefix=bool(raw.get("strip_prefix", True)),
-        client_max_body_size=str(size) if size is not None else None,
+        client_max_body_size=size_str,
     )

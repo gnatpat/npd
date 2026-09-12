@@ -8,6 +8,8 @@ from deploy.reconcile import (
     NginxTestFailed,
     ReloadFailed,
     apply_changes,
+    owned_files,
+    plan_app_changes,
     plan_changes,
 )
 from deploy.runner import RecordingRunner
@@ -349,3 +351,60 @@ def test_a_rollback_failure_names_the_unrestorable_path_on_stderr(tmp_path, caps
     captured = capsys.readouterr()
     assert "WARNING" in captured.err
     assert str(paths.unit_file("x")) in captured.err
+
+
+# --- CRITICAL 3: re-render must orphan-check via owned_files/plan_app_changes
+#
+# There is no state file: the set of installed apps is the set of generated
+# files. If a re-render's desired set drops a file the app used to own
+# (nginx section removed, or type flipped service<->static), that file must
+# be planned for removal — otherwise it stays on disk forever, still
+# running / still claiming a port.
+
+
+def test_owned_files_is_empty_when_nothing_is_on_disk(tmp_path):
+    paths = Paths.under(tmp_path)
+    assert owned_files("x", paths) == []
+
+
+def test_owned_files_reports_only_what_exists_on_disk(tmp_path):
+    paths = Paths.under(tmp_path)
+    apply_changes(plan_changes(desired(paths)), runner=RecordingRunner())
+    assert set(owned_files("x", paths)) == {
+        paths.unit_file("x"),
+        paths.nginx_file("x"),
+    }
+
+
+def test_plan_app_changes_removes_a_dropped_nginx_snippet(tmp_path):
+    """service with [nginx] -> service without [nginx]: the stale .conf must
+    be planned for removal."""
+    paths = Paths.under(tmp_path)
+    apply_changes(plan_changes(desired(paths)), runner=RecordingRunner())
+    new_desired = {paths.unit_file("x"): UNIT}  # nginx section dropped
+    changes = plan_app_changes("x", new_desired, paths)
+    removals = {c.path for c in changes if c.is_removal}
+    assert removals == {paths.nginx_file("x")}
+    apply_changes(changes, runner=RecordingRunner())
+    assert not paths.nginx_file("x").exists()
+    assert paths.unit_file("x").exists()
+
+
+def test_plan_app_changes_removes_a_stale_unit_when_type_flips_to_static(tmp_path):
+    """service -> static: the stale .service unit must be planned for
+    removal even though the app still owns an nginx snippet."""
+    paths = Paths.under(tmp_path)
+    apply_changes(plan_changes(desired(paths)), runner=RecordingRunner())
+    new_desired = {paths.nginx_file("x"): CONF}  # no more .service; only nginx
+    changes = plan_app_changes("x", new_desired, paths)
+    removals = {c.path for c in changes if c.is_removal}
+    assert removals == {paths.unit_file("x")}
+    apply_changes(changes, runner=RecordingRunner())
+    assert not paths.unit_file("x").exists()
+    assert paths.nginx_file("x").exists()
+
+
+def test_plan_app_changes_plans_nothing_when_desired_set_is_unchanged(tmp_path):
+    paths = Paths.under(tmp_path)
+    apply_changes(plan_changes(desired(paths)), runner=RecordingRunner())
+    assert plan_app_changes("x", desired(paths), paths) == []

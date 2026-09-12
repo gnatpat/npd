@@ -122,3 +122,21 @@ def test_env_value_with_space_is_quoted_and_survives_intact():
     )
     out = render_unit(cfg, 8000, PATHS)
     assert 'Environment="GREETING=hello there"\n' in out
+
+
+def test_percent_in_env_value_is_escaped_for_systemd():
+    cfg = parse_config(
+        '[service]\nstart = "run"\n[env]\nMSG = "100%"\n',
+        repo_name="test",
+    )
+    out = render_unit(cfg, 8000, PATHS)
+    assert 'Environment="MSG=100%%"\n' in out
+
+
+def test_percent_in_start_command_is_escaped_for_systemd():
+    cfg = parse_config(
+        '[service]\nstart = "serve --fmt %H"\n',
+        repo_name="test",
+    )
+    out = render_unit(cfg, 8000, PATHS)
+    assert "ExecStart=/bin/bash -c 'exec serve --fmt %%H'\n" in out

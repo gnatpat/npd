@@ -1,8 +1,11 @@
 import os
+import re
 import shutil
 from pathlib import Path
 
 from deploy.paths import Paths
+
+_COMMIT_PATTERN = re.compile(r"^[0-9a-f]+$")
 
 
 def publish(source: Path, *, name: str, commit: str, paths: Paths) -> Path:
@@ -11,6 +14,11 @@ def publish(source: Path, *, name: str, commit: str, paths: Paths) -> Path:
     The swap is a rename, so a reader never sees a half-copied tree: it gets
     either the whole old build or the whole new one.
     """
+    if not _COMMIT_PATTERN.match(commit):
+        raise ValueError(
+            f"commit {commit!r} is not a valid hex string; refusing to build a "
+            "path from it"
+        )
     if not source.is_dir():
         raise FileNotFoundError(f"build output {source} does not exist")
 

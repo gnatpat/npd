@@ -335,3 +335,138 @@ def test_app_name_with_underscore_is_accepted():
         repo_name="x",
     )
     assert c.name == "a_b"
+
+
+# --- CRITICAL 1: nginx.path and client_max_body_size are injection surfaces
+
+
+def test_client_max_body_size_injection_is_rejected():
+    with pytest.raises(ConfigError, match="client_max_body_size"):
+        parse_config(
+            '[service]\nstart = "run"\n[nginx]\npath = "/x/"\n'
+            'client_max_body_size = "1m; } location /pwn { proxy_pass '
+            'http://10.0.0.1;"\n',
+            repo_name="x",
+        )
+
+
+@pytest.mark.parametrize("size", ["10m", "1M", "500k", "1g", "1G", "100"])
+def test_valid_client_max_body_size_values_are_accepted(size):
+    c = parse_config(
+        f'[service]\nstart = "run"\n[nginx]\npath = "/x/"\n'
+        f'client_max_body_size = "{size}"\n',
+        repo_name="x",
+    )
+    assert c.nginx.client_max_body_size == size
+
+
+def test_nginx_path_injection_via_brace_is_rejected():
+    with pytest.raises(ConfigError, match="invalid characters"):
+        parse_config(
+            '[service]\nstart = "run"\n'
+            '[nginx]\npath = "/x/ { proxy_pass http://10.0.0.1; } location /y"\n',
+            repo_name="x",
+        )
+
+
+def test_nginx_path_injection_via_semicolon_is_rejected():
+    with pytest.raises(ConfigError, match="invalid characters"):
+        parse_config(
+            '[service]\nstart = "run"\n[nginx]\npath = "/x;evil"\n',
+            repo_name="x",
+        )
+
+
+def test_nginx_path_with_whitespace_is_rejected():
+    with pytest.raises(ConfigError, match="invalid characters"):
+        parse_config(
+            '[service]\nstart = "run"\n[nginx]\npath = "/x y"\n',
+            repo_name="x",
+        )
+
+
+@pytest.mark.parametrize("path", ["/pokemon/", "/blog", "/a-b_c.d/"])
+def test_normal_nginx_paths_are_accepted(path):
+    c = parse_config(
+        f'[service]\nstart = "run"\n[nginx]\npath = "{path}"\n',
+        repo_name="x",
+    )
+    assert c.nginx.path == path
+
+
+# --- CRITICAL 2: PORT/PATH are reserved and cannot be overridden via [env]/[secrets]
+
+
+def test_port_in_env_is_rejected():
+    with pytest.raises(ConfigError, match="PORT"):
+        parse_config(
+            '[service]\nstart = "run"\n[env]\nPORT = "3000"\n',
+            repo_name="x",
+        )
+
+
+def test_path_in_env_is_rejected():
+    with pytest.raises(ConfigError, match="PATH"):
+        parse_config(
+            '[service]\nstart = "run"\n[env]\nPATH = "/tmp"\n',
+            repo_name="x",
+        )
+
+
+def test_port_in_secrets_is_rejected():
+    with pytest.raises(ConfigError, match="PORT"):
+        parse_config(
+            '[service]\nstart = "run"\n[secrets]\nPORT = "desc"\n',
+            repo_name="x",
+        )
+
+
+# --- IMPORTANT 1: service.port must be in the unprivileged range
+
+
+@pytest.mark.parametrize("port", [-5, 0, 80, 99999])
+def test_out_of_range_port_pins_are_rejected(port):
+    with pytest.raises(ConfigError, match="service.port"):
+        parse_config(
+            f'[service]\nstart = "run"\nport = {port}\n',
+            repo_name="x",
+        )
+
+
+@pytest.mark.parametrize("port", [8080, 8151, 8152])
+def test_in_range_port_pins_are_accepted(port):
+    c = parse_config(
+        f'[service]\nstart = "run"\nport = {port}\n',
+        repo_name="x",
+    )
+    assert c.service.port == port
+
+
+# --- MINOR 1: a non-string app name raises ConfigError, not TypeError
+
+
+def test_non_string_app_name_is_rejected():
+    with pytest.raises(ConfigError, match="app.name"):
+        parse_config(
+            '[app]\nname = 123\n[service]\nstart = "run"\n',
+            repo_name="x",
+        )
+
+
+# --- MINOR 2: dev.start gets the same validation as service.start
+
+
+def test_dev_start_with_single_quote_is_rejected():
+    with pytest.raises(ConfigError, match="single quote"):
+        parse_config(
+            '[service]\nstart = "run"\n[dev]\nstart = "echo \'hi\'"\n',
+            repo_name="x",
+        )
+
+
+def test_dev_start_as_non_string_is_rejected():
+    with pytest.raises(ConfigError, match="dev.start"):
+        parse_config(
+            '[service]\nstart = "run"\n[dev]\nstart = true\n',
+            repo_name="x",
+        )
