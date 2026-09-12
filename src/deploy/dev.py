@@ -75,13 +75,11 @@ def run_dev(
         output = repo / config.build.output
         print(f"[dev] serving {output} on http://127.0.0.1:{port}")
         # sys.executable, not a bare "python": the target server (and some
-        # laptops) only have python3 on PATH, but this process is already
+        # laptops) have only python3 on PATH, but this process is already
         # running under an interpreter that is guaranteed to exist.
-        result = runner.run(
+        return subprocess.call(
             [sys.executable, "-m", "http.server", str(port), "--directory", str(output)],
-            check=False,
         )
-        return result.returncode
 
     app_port = port
     if prefix:
