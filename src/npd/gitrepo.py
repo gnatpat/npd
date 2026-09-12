@@ -1,10 +1,10 @@
-import os
 from pathlib import Path
 
+from npd import settings
 from npd.paths import app_name_error
 from npd.runner import Runner
 
-GITHUB_USER = os.environ.get("NPD_GITHUB_USER", "gnatpat")
+GITHUB_USER = settings.GITHUB_USER
 
 
 class DirtyRepo(Exception):

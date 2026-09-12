@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from npd import settings
 from npd.config import AppConfig, NginxConfig
 from npd.paths import ArtifactKind, MANAGED_HEADER, NGINX_SNIPPET, Paths, SYSTEMD_UNIT
 
@@ -68,8 +69,6 @@ def render_nginx_snippet(config: AppConfig, port: int | None, paths: Paths) -> s
     return "\n".join(lines) + "\n"
 
 
-UNIT_PATH = "/home/nathan/.local/bin:/usr/local/bin:/usr/bin:/bin"
-
 # Mostly-static text, so a template reads straighter than an accumulating
 # list of lines. {var_block} is the one dynamic-shaped part: the sorted
 # `Environment=` lines plus the optional `EnvironmentFile=` line, pre-joined
@@ -84,7 +83,7 @@ _UNIT_TEMPLATE = (
     "\n"
     "[Service]\n"
     "Type=simple\n"
-    "User=nathan\n"
+    "User={user}\n"
     "WorkingDirectory={workdir}\n"
     'Environment="PATH={unit_path}"\n'
     'Environment="PORT={port}"\n'
@@ -134,8 +133,9 @@ def render_systemd_unit(
     return _UNIT_TEMPLATE.format(
         header=MANAGED_HEADER,
         name=config.name,
+        user=settings.SERVICE_USER,
         workdir=workdir,
-        unit_path=UNIT_PATH,
+        unit_path=settings.UNIT_PATH,
         port=port,
         commit_line=commit_line,
         var_block=var_block,

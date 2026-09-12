@@ -1,9 +1,10 @@
 import re
 import sys
 
+from npd import settings
 from npd.paths import SYSTEMD_UNIT, Paths
 
-PORT_RANGE = range(8200, 8300)
+PORT_RANGE = range(settings.PORT_RANGE_START, settings.PORT_RANGE_END)
 _PORT_LINE = re.compile(r'Environment="?PORT=(\d+)"?', re.MULTILINE)
 
 

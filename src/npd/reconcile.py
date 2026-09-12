@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from npd import settings
 from npd.paths import (
     ARTIFACT_KINDS,
     MANAGED_HEADER,
@@ -17,7 +18,7 @@ from npd.paths import (
 from npd.render import Artifact
 from npd.runner import Runner
 
-SYSTEMCTL = "/usr/bin/systemctl"
+SYSTEMCTL = settings.SYSTEMCTL
 
 
 class ForeignFile(Exception):

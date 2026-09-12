@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from npd import settings
 from npd.config import parse_config
 from npd.paths import MANAGED_HEADER, NGINX_SNIPPET, SYSTEMD_UNIT, Paths
 from npd.render import render, render_systemd_unit
@@ -82,7 +83,16 @@ def test_restart_policy_is_always_with_one_second_backoff():
     out = unit()
     assert "Restart=always\n" in out
     assert "RestartSec=1\n" in out
-    assert "User=nathan\n" in out
+    assert f"User={settings.SERVICE_USER}\n" in out
+
+
+def test_service_user_setting_actually_reaches_the_unit(monkeypatch):
+    """settings.SERVICE_USER must not just exist -- it has to be the thing
+    that actually decides the unit's `User=` line, not a value render.py
+    happens to duplicate on its own. Without this, extracting the constant
+    into settings.py could be purely decorative."""
+    monkeypatch.setattr(settings, "SERVICE_USER", "someone-else")
+    assert "User=someone-else\n" in unit()
 
 
 def test_render_produces_unit_and_nginx_for_a_service():

@@ -2,6 +2,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from npd import settings
+
 MANAGED_HEADER = "# Managed by npd — edits will be overwritten"
 
 _SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -79,10 +81,10 @@ class Paths:
     def default(cls) -> "Paths":
         return cls(
             apps=Path.home() / "apps",
-            env=Path("/etc/npd/env"),
-            units=Path("/etc/npd/systemd"),
-            nginx=Path("/etc/nginx/npd.d"),
-            static=Path("/var/www/npd"),
+            env=settings.ETC_ENV_DIR,
+            units=settings.ETC_SYSTEMD_DIR,
+            nginx=settings.NGINX_SNIPPET_DIR,
+            static=settings.STATIC_DIR,
         )
 
     @classmethod

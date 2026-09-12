@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from npd import settings
 from npd.config import AppConfig, ConfigError, parse_config
 from npd.gitrepo import clone, head_commit, pull_ff_only, remote_url, repo_url
 from npd.health import wait_healthy
@@ -19,7 +20,7 @@ from npd.runner import Runner
 from npd.secrets import merge_secrets, missing_secrets, read_env_file
 from npd.static import publish, published_paths
 
-SYSTEMCTL = "/usr/bin/systemctl"
+SYSTEMCTL = settings.SYSTEMCTL
 Prompt = Callable[[str, str], str]
 
 
