@@ -1,7 +1,40 @@
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 MANAGED_HEADER = "# Managed by deploy — edits will be overwritten"
+
+_SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def app_name_error(name: str, what: str = "app name") -> str | None:
+    """Why `name` is unsafe as a single path segment, or None if it is fine.
+    Returns a message rather than raising so each caller can use its own
+    exception type: ConfigError for a bad deploy.toml, ValueError for a bad
+    command-line argument.
+
+    This is the one place that knows what makes a name safe to concatenate
+    into a path (clone_dir, env_file, systemd_unit_file, ...) — config.py and
+    gitrepo.py both used to carry their own copy of this rule; a CLI-supplied
+    name needs the same check before it ever reaches Paths."""
+    if not name or not name.strip():
+        return f"{what} cannot be empty"
+    if "/" in name or "\\" in name:
+        return (
+            f"{what} {name!r} contains slashes; "
+            "it must be a single path segment (letters, digits, hyphen, underscore, dot)"
+        )
+    if name in (".", ".."):
+        return (
+            f"{what} {name!r} is not allowed; "
+            "it must be a single path segment (letters, digits, hyphen, underscore, dot)"
+        )
+    if not _SAFE_NAME_PATTERN.match(name):
+        return (
+            f"{what} {name!r} contains invalid characters; "
+            "it must contain only letters, digits, hyphen, underscore, or dot"
+        )
+    return None
 
 
 @dataclass(frozen=True)

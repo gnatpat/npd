@@ -156,3 +156,104 @@ def test_apply_failure_carries_what_already_took_effect():
 
     exc = ReloadFailed("reload broke", actions_completed={"daemon-reload"})
     assert exc.actions_completed == {"daemon-reload"}
+
+
+def test_apply_failure_reaches_the_user_via_main(monkeypatch, capsys):
+    """test_apply_failure_carries_what_already_took_effect only exercises the
+    exception constructor; it never drives cli.main(), so "does
+    actions_completed actually reach the terminal" was untested. Drive it
+    for real by making a command raise ReloadFailed and checking stderr."""
+    from deploy.cli import main
+    from deploy.reconcile import ReloadFailed
+
+    def _boom(*args, **kwargs):
+        raise ReloadFailed(
+            "systemctl reload nginx failed", actions_completed={"daemon-reload"}
+        )
+
+    monkeypatch.setattr("deploy.cli.commands.diff", _boom)
+    assert main(["diff", "pokemon"]) == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "daemon-reload" in err
+
+
+def test_logs_goes_straight_to_subprocess_call_not_through_runner(monkeypatch):
+    """logs() must not go through Runner: RealRunner captures stdout/stderr,
+    which would make `deploy logs` print nothing and `deploy logs -f` hang
+    forever capturing an endless stream with nothing on screen."""
+    from deploy import commands
+
+    calls = []
+    monkeypatch.setattr(
+        commands.subprocess, "call", lambda argv: calls.append(argv) or 0
+    )
+    assert commands.logs("pokemon", follow=False) == 0
+    assert calls == [["journalctl", "-u", "pokemon", "-n", "50", "--no-pager"]]
+
+
+def test_logs_follow_passes_dash_f_instead_of_no_pager(monkeypatch):
+    from deploy import commands
+
+    calls = []
+    monkeypatch.setattr(
+        commands.subprocess, "call", lambda argv: calls.append(argv) or 0
+    )
+    commands.logs("pokemon", follow=True)
+    assert calls[0][-1] == "-f"
+    assert "--no-pager" not in calls[0]
+
+
+def test_remove_refuses_to_delete_a_unit_still_reported_active(tmp_path):
+    """If systemctl stop did not actually take effect, deleting the unit
+    would leave a running service invisible to `deploy list` (no port
+    record, no unit file left to identify it)."""
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
+    runner = RecordingRunner(stdout={"is-active": "active\n"})
+    with pytest.raises(ValueError, match="still active"):
+        remove("pokemon", paths=paths, runner=runner, purge=False, confirm=lambda m: True)
+    assert paths.systemd_unit_file("pokemon").exists()
+
+
+def test_remove_proceeds_when_the_unit_was_never_active(tmp_path):
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
+    runner = RecordingRunner(stdout={"is-active": "inactive\n"})
+    remove("pokemon", paths=paths, runner=runner, purge=False, confirm=lambda m: True)
+    assert not paths.systemd_unit_file("pokemon").exists()
+
+
+def test_cli_rejects_a_path_traversal_app_name_before_touching_paths(tmp_path, capsys):
+    """A name like "../../something" must never reach Paths.clone_dir /
+    env_file, which just concatenate — the rejection has to happen in the
+    CLI layer, before any command function runs."""
+    from deploy.cli import main
+
+    assert main(["--root", str(tmp_path), "remove", "../../etc", "--purge"]) == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "slashes" in err
+
+
+def test_list_continues_past_a_broken_apps_config(tmp_path):
+    """The command someone reaches for to find out what is wrong must not be
+    the one that breaks first: one app with an invalid deploy.toml must not
+    stop every other, healthy app from listing."""
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
+
+    broken = paths.clone_dir("broken")
+    broken.mkdir(parents=True)
+    (broken / "deploy.toml").write_text('[app]\nname = "broken"\n')  # no [service]
+    paths.units.mkdir(parents=True, exist_ok=True)
+    paths.systemd_unit_file("broken").write_text("not a real unit")
+
+    apps = {a.name: a for a in list_apps(paths=paths, runner=RecordingRunner())}
+    assert apps["pokemon"].route == "/pokemon/"
+    assert apps["pokemon"].error is None
+    assert apps["broken"].route is None
+    assert apps["broken"].error is not None

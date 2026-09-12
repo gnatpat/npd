@@ -1,11 +1,10 @@
 import os
-import re
 from pathlib import Path
 
+from deploy.paths import app_name_error
 from deploy.runner import Runner
 
 GITHUB_USER = os.environ.get("DEPLOY_GITHUB_USER", "gnatpat")
-BARE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class DirtyRepo(Exception):
@@ -26,26 +25,9 @@ def repo_url(name_or_url: str) -> str:
         return name_or_url
 
     # Otherwise it should be a bare name; validate it
-    if not name_or_url or not name_or_url.strip():
-        raise ValueError("repository name cannot be empty")
-
-    if "/" in name_or_url or "\\" in name_or_url:
-        raise ValueError(
-            f"repository name {name_or_url!r} contains slashes; "
-            "it must be a single path segment (letters, digits, hyphen, underscore, dot)"
-        )
-
-    if name_or_url == "." or name_or_url == "..":
-        raise ValueError(
-            f"repository name {name_or_url!r} is not allowed; "
-            "it must be a single path segment (letters, digits, hyphen, underscore, dot)"
-        )
-
-    if not BARE_NAME_PATTERN.match(name_or_url):
-        raise ValueError(
-            f"repository name {name_or_url!r} contains invalid characters; "
-            "it must contain only letters, digits, hyphen, underscore, or dot"
-        )
+    error = app_name_error(name_or_url, "repository name")
+    if error:
+        raise ValueError(error)
 
     return f"git@github.com:{GITHUB_USER}/{name_or_url}.git"
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from deploy.config import AppConfig, parse_config
+from deploy.config import AppConfig, ConfigError, parse_config
 from deploy.gitrepo import clone, head_commit, pull_ff_only, remote_url, repo_url
 from deploy.health import wait_healthy
 from deploy.paths import SYSTEMD_UNIT, Paths
@@ -250,6 +250,7 @@ class AppStatus:
     active: str
     commit: str
     behind: int | None = None
+    error: str | None = None
 
 
 def status_of(
@@ -257,10 +258,19 @@ def status_of(
 ) -> AppStatus:
     port = ports_in_use(paths).get(name)
     route = None
+    error = None
     config_file = paths.clone_dir(name) / "deploy.toml"
     if config_file.exists():
-        config = parse_config(config_file.read_text(), repo_name=name)
-        route = config.nginx.path if config.nginx else None
+        # A broken deploy.toml must not take down the whole `list` command —
+        # it is the tool someone reaches for to find out what is wrong, so a
+        # bad config for one app is reported on that app's row (route "?")
+        # while every other, healthy app still lists normally.
+        try:
+            config = parse_config(config_file.read_text(), repo_name=name)
+        except ConfigError as exc:
+            error = str(exc)
+        else:
+            route = config.nginx.path if config.nginx else None
 
     active = "unknown"
     if port is not None:
@@ -284,6 +294,7 @@ def status_of(
         active=active,
         commit=commit,
         behind=behind,
+        error=error,
     )
 
 
@@ -341,16 +352,25 @@ def restart(name: str, *, paths: Paths, runner: Runner) -> int:
     if port is None:
         return 0
     health_path = config.service.health_path if config.service else None
-    return 0 if wait_healthy(port, health_path) else 1
+    if wait_healthy(port, health_path):
+        return 0
+    print(f"{name}: FAILED health check on port {port} after restart")
+    return 1
 
 
-def logs(name: str, *, follow: bool, runner: Runner) -> int:
+def logs(name: str, *, follow: bool) -> int:
+    """journalctl is a command the USER watches, not one whose output the
+    tool consumes — unlike everything else in this module, it must not go
+    through Runner (RealRunner captures stdout/stderr, so `deploy logs`
+    would print nothing, and `-f` would capture an endless stream forever
+    with nothing on screen). subprocess.call inherits the terminal directly,
+    the same way dev.run_dev does for the foreground dev server."""
     argv = ["journalctl", "-u", name, "-n", "50"]
     if follow:
         argv.append("-f")
     else:
         argv.append("--no-pager")
-    return runner.run(argv, check=False).returncode
+    return subprocess.call(argv)
 
 
 def remove(
@@ -365,6 +385,18 @@ def remove(
     if unit.exists():
         runner.run(["sudo", SYSTEMCTL, "stop", name], check=False)
         runner.run(["sudo", SYSTEMCTL, "disable", name], check=False)
+
+        # Confirm the stop actually took effect before deleting the unit
+        # that defines it. If it did not, deleting the unit now would leave
+        # a running service invisible to `deploy list` (no port record, no
+        # unit file) and awkward to kill by hand.
+        result = runner.run(["sudo", SYSTEMCTL, "is-active", name], check=False)
+        active = (result.stdout or "").strip()
+        if active == "active":
+            raise ValueError(
+                f"{name}: still active after systemctl stop; "
+                "stop it by hand before removing"
+            )
 
     # owned_artifacts derives the set from ARTIFACT_KINDS, so a kind added
     # later is removed here too without editing this function.

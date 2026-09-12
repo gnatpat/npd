@@ -7,7 +7,7 @@ from deploy import commands
 from deploy.config import ConfigError, parse_config
 from deploy.dev import DEFAULT_DEV_PORT, run_dev
 from deploy.gitrepo import DirtyRepo
-from deploy.paths import Paths
+from deploy.paths import Paths, app_name_error
 from deploy.reconcile import ApplyFailed, ForeignFile
 from deploy.runner import RealRunner
 
@@ -61,12 +61,30 @@ def _confirm(message: str) -> bool:
     return input(f"{message}type 'yes' to confirm: ").strip() == "yes"
 
 
+def _validated(name: str) -> str:
+    """Reject a CLI-supplied app name before it ever reaches Paths.
+
+    Without this, a name straight from argparse flows unchecked into
+    Paths.clone_dir / env_file, which just concatenate — so e.g. `deploy
+    remove --purge "../../something"` could construct a path outside
+    ~/apps. Raises ValueError, which main() already catches and prints
+    cleanly."""
+    error = app_name_error(name)
+    if error:
+        raise ValueError(error)
+    return name
+
+
 def _run(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     paths = Paths.under(args.root) if args.root else Paths.default()
     runner = RealRunner()
 
     if args.command == "install":
+        # install's argument is a bare app name OR a full git URL
+        # (repo_url tells them apart); it is not a lone path segment like
+        # the other commands' `name`, so it goes through repo_url's own
+        # validation instead of _validated here.
         return commands.install(
             args.name, paths=paths, runner=runner, prompt=_prompt
         )
@@ -78,6 +96,8 @@ def _run(argv: list[str] | None = None) -> int:
         if not names or names == [None]:
             print("give an app name or --all", file=sys.stderr)
             return 2
+        if not args.all:
+            _validated(args.name)
         return max(
             commands.update(n, paths=paths, runner=runner, prompt=_prompt)
             for n in names
@@ -87,24 +107,29 @@ def _run(argv: list[str] | None = None) -> int:
         for app in commands.list_apps(paths=paths, runner=runner, fetch=args.fetch):
             port = app.port if app.port is not None else "-"
             behind = "" if app.behind in (None, 0) else f"  ({app.behind} behind)"
-            print(
+            line = (
                 f"{app.name:<12} {str(port):<6} {app.route or '-':<14} "
                 f"{app.active:<10} {app.commit}{behind}"
             )
+            if app.error:
+                line += f"  [error: {app.error}]"
+            print(line)
         return 0
 
     if args.command == "diff":
+        if args.name is not None:
+            _validated(args.name)
         return commands.diff(args.name, paths=paths, runner=runner)
 
     if args.command == "restart":
-        return commands.restart(args.name, paths=paths, runner=runner)
+        return commands.restart(_validated(args.name), paths=paths, runner=runner)
 
     if args.command == "logs":
-        return commands.logs(args.name, follow=args.follow, runner=runner)
+        return commands.logs(_validated(args.name), follow=args.follow)
 
     if args.command == "remove":
         return commands.remove(
-            args.name,
+            _validated(args.name),
             paths=paths,
             runner=runner,
             purge=args.purge,
@@ -142,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
             stuck = ", ".join(str(p) for p in exc.unrestored)
             print(f"  could not roll back: {stuck} — check by hand", file=sys.stderr)
         return 1
-    except (ConfigError, ForeignFile, DirtyRepo, ValueError) as exc:
+    except (ConfigError, ForeignFile, DirtyRepo, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

@@ -3,8 +3,9 @@ import tomllib
 from dataclasses import dataclass, field
 from typing import Any
 
+from deploy.paths import app_name_error
+
 VALID_TYPES = ("service", "static")
-NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 NGINX_PATH_PATTERN = re.compile(r"^[A-Za-z0-9/_.~-]+$")
 BODY_SIZE_PATTERN = re.compile(r"^\d+[kKmMgG]?$")
 RESERVED_ENV_KEYS = ("PORT", "PATH")
@@ -81,23 +82,9 @@ def _string(value: Any, key: str, where: str) -> str:
 
 def _validate_app_name(name: str) -> None:
     """Validate the app name is a safe single path segment."""
-    if not name:
-        raise ConfigError("app name cannot be empty")
-    if "/" in name or "\\" in name:
-        raise ConfigError(
-            f"app name {name!r} contains slashes; "
-            "it must be a single path segment (letters, digits, hyphen, underscore, dot)"
-        )
-    if name == "." or name == "..":
-        raise ConfigError(
-            f"app name {name!r} is not allowed; "
-            "it must be a single path segment (letters, digits, hyphen, underscore, dot)"
-        )
-    if not NAME_PATTERN.match(name):
-        raise ConfigError(
-            f"app name {name!r} contains invalid characters; "
-            "it must contain only letters, digits, hyphen, underscore, or dot"
-        )
+    error = app_name_error(name)
+    if error:
+        raise ConfigError(error)
 
 
 @dataclass(frozen=True)
