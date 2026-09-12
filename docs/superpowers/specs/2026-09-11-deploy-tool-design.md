@@ -140,6 +140,12 @@ Rules:
   each value and writes the env file. `update` prompts for any newly declared
   secret not already present, so adding a secret to a repo does not require
   separately remembering to edit a file on the server.
+- `health_path` is optional and easy to get wrong. The check GETs
+  `http://127.0.0.1:<port><health_path>`, so for an app with
+  `strip_prefix = false` — which receives its own prefix — bare `/` usually
+  404s and the tool reports a failed health check on a deploy that worked.
+  Confirm what the app answers on with `curl` before setting it; omitting it
+  falls back to a TCP connect, which is what most apps should use.
 - `[dev]` overrides `[service]` for local runs only. Absent keys fall back to
   `[service]`, so a repo with no `[dev]` section runs locally exactly what runs
   in production.
@@ -494,6 +500,11 @@ shogi and wedding are decommissioned instead; site keeps its bare-repo hook.
 One at a time, starting with pokemon. Downtime is the gap between
 steps 3 and 5.
 
+0. Check the clone is clean: `cd ~/<app> && git status --porcelain` must print
+   nothing. `deploy update` refuses a dirty tree and counts untracked files as
+   dirty — deliberately, since live SQLite databases sit inside these clones —
+   so an un-gitignored `.db` or `node_modules` blocks every future update.
+   Gitignore and commit first.
 1. Add `deploy.toml` to the app's repo with `port` pinned to the port it uses
    today, and `strip_prefix` set to match the app's current `proxy_pass` line —
    a trailing slash means `strip_prefix = true`. Getting this wrong breaks every

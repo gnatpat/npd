@@ -3579,7 +3579,11 @@ steps = ["npm install", "npm run build"]
 workdir = "server"
 start = "uv run uvicorn main:app --host 127.0.0.1 --port $PORT"
 port = 8151
-health_path = "/"
+# No health_path: pokemon is the one app with strip_prefix = false, so nginx
+# passes /pokemon/... through untouched and the app's routes live under
+# /pokemon/ — a GET of bare "/" very likely 404s. With health_path omitted a
+# successful TCP connect is the check, which is what every other app gets.
+# Add one only after confirming what the app actually answers (step 4a).
 
 [nginx]
 path = "/pokemon/"
@@ -3589,6 +3593,34 @@ client_max_body_size = "10m"
 [secrets]
 COLLECTION_PASSWORD = "password for the collection upload endpoint"
 ```
+
+- [ ] **Step 4a: Find out what the app answers on, before trusting a health check**
+
+The health check GETs `http://127.0.0.1:<port><health_path>`. Getting it wrong
+means the tool reports `FAILED health check` in the middle of a cutover that
+actually worked, and you cannot tell a false alarm from a real failure at the
+moment you least want the ambiguity. On the server, with the old service still
+running:
+
+```bash
+for path in / /pokemon/ /pokemon/api/collection; do
+  printf '%-26s %s\n' "$path" "$(curl -s -o /dev/null -w '%{http_code}' 127.0.0.1:8151$path)"
+done
+```
+
+If `/` returns 2xx you may set `health_path = "/"`. If it 404s — likely, since
+this app receives its own prefix — leave `health_path` out, or set it to a path
+that did answer. Repeat for each app you migrate: `/blog` and `/crochet` strip
+their prefix so `/` is the right probe for them, but confirm rather than assume.
+
+- [ ] **Step 4b: Check the clone is clean, or every future update will fail**
+
+`deploy update` refuses to pull over a dirty tree, and it counts UNTRACKED
+files as dirty — deliberately, because live SQLite databases sit inside these
+clones. Run `cd ~/pokemon && git status --porcelain`. If it lists anything (a
+`.db` file, `node_modules`, build output), add it to `.gitignore` and commit
+that first, or every future `deploy update` for this app fails with "has
+uncommitted changes".
 
 - [ ] **Step 5: Verify the prefix behaviour locally before touching the server**
 
