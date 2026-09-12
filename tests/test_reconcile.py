@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from deploy.paths import MANAGED_HEADER, Paths
@@ -278,3 +280,72 @@ def test_removal_of_a_file_without_the_managed_header_is_refused(tmp_path):
     paths.unit_file("x").write_text("[Service]\nExecStart=/hand/written\n")
     with pytest.raises(ForeignFile, match="x.service"):
         plan_changes({}, remove=[paths.unit_file("x")])
+
+
+# --- Fix round 2: _rollback must itself be fault-tolerant -----------------
+#
+# Important: _rollback previously had no per-file error handling, so a
+# single un-restorable file would (a) abandon restoring the rest, leaving
+# the half-restored split state Critical 1's fix exists to eliminate, and
+# (b) let its own exception escape in place of the real NginxTestFailed /
+# ReloadFailed / OSError, misleading the operator about what went wrong.
+
+
+class SaboteurRunner(RecordingRunner):
+    """A RecordingRunner that, at the moment `nginx -t` is invoked, replaces
+    `sabotage_path` with a directory — so that when `apply_changes` later
+    tries to roll it back, the restore of that one file fails with
+    IsADirectoryError while every other file remains a normal, restorable
+    file. Lets a test simulate "the rollback itself partially fails"
+    deterministically and independent of whether the tests run as root."""
+
+    def __init__(self, sabotage_path: Path, **kwargs):
+        super().__init__(**kwargs)
+        self.sabotage_path = sabotage_path
+
+    def run(self, argv, **kwargs):
+        if "nginx -t" in " ".join(argv):
+            self.sabotage_path.unlink()
+            self.sabotage_path.mkdir()
+        return super().run(argv, **kwargs)
+
+
+def _setup_unrestorable_rollback_scenario(tmp_path):
+    paths = Paths.under(tmp_path)
+    apply_changes(plan_changes(desired(paths)), runner=RecordingRunner())
+    broken = dict(desired(paths))
+    broken[paths.unit_file("x")] = UNIT.replace("8200", "8201")
+    broken[paths.nginx_file("x")] = MANAGED_HEADER + "\nthis is not nginx\n"
+    runner = SaboteurRunner(paths.unit_file("x"), results={"nginx -t": 1})
+    return paths, broken, runner
+
+
+def test_a_rollback_failure_does_not_abandon_restoring_other_files(tmp_path):
+    paths, broken, runner = _setup_unrestorable_rollback_scenario(tmp_path)
+    with pytest.raises(NginxTestFailed):
+        apply_changes(plan_changes(broken), runner=runner)
+    # The unit file could not be restored (sabotaged into a directory), but
+    # that must not stop the nginx file — which could be restored — from
+    # actually being restored.
+    assert paths.nginx_file("x").read_text() == CONF
+
+
+def test_a_rollback_failure_does_not_replace_the_original_exception(tmp_path):
+    paths, broken, runner = _setup_unrestorable_rollback_scenario(tmp_path)
+    with pytest.raises(NginxTestFailed) as excinfo:
+        apply_changes(plan_changes(broken), runner=runner)
+    # The operator must still learn that nginx rejected the config, not
+    # merely that some unrelated restore failed.
+    assert "nginx -t failed" in str(excinfo.value)
+    # ...and, since it needs a human anyway, the primary error should also
+    # name the path that could not be restored.
+    assert str(paths.unit_file("x")) in str(excinfo.value)
+
+
+def test_a_rollback_failure_names_the_unrestorable_path_on_stderr(tmp_path, capsys):
+    paths, broken, runner = _setup_unrestorable_rollback_scenario(tmp_path)
+    with pytest.raises(NginxTestFailed):
+        apply_changes(plan_changes(broken), runner=runner)
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err
+    assert str(paths.unit_file("x")) in captured.err

@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,15 +120,27 @@ def apply_changes(
         # needing to be applied.
         result = runner.run(["sudo", "nginx", "-t"], check=False)
         if result.returncode != 0:
-            _rollback(changes)
-            raise NginxTestFailed(result.stderr or "nginx -t failed")
+            unrestored = _rollback(changes)
+            message = result.stderr or "nginx -t failed"
+            if unrestored:
+                message += (
+                    f"; additionally, failed to restore: "
+                    f"{', '.join(str(p) for p in unrestored)} — check these by hand"
+                )
+            raise NginxTestFailed(message)
 
     if touched_units:
         try:
             runner.run(["sudo", SYSTEMCTL, "daemon-reload"])
         except subprocess.CalledProcessError as e:
-            _rollback(changes)
-            raise ReloadFailed(f"systemctl daemon-reload failed: {e}") from e
+            unrestored = _rollback(changes)
+            message = f"systemctl daemon-reload failed: {e}"
+            if unrestored:
+                message += (
+                    f"; additionally, failed to restore: "
+                    f"{', '.join(str(p) for p in unrestored)} — check these by hand"
+                )
+            raise ReloadFailed(message) from e
         actions.add("daemon-reload")
 
     if touched_nginx:
@@ -153,8 +166,14 @@ def _write_changes(changes: list[Change]) -> None:
             else:
                 _write_atomically(change.path, change.after)
             applied.append(change)
-    except OSError:
-        _rollback(applied)
+    except OSError as e:
+        unrestored = _rollback(applied)
+        if unrestored:
+            e.add_note(
+                "additionally, failed to restore: "
+                + ", ".join(str(p) for p in unrestored)
+                + " — check these by hand"
+            )
         raise
 
 
@@ -175,9 +194,27 @@ def _write_atomically(path: Path, content: str) -> None:
         raise
 
 
-def _rollback(changes: list[Change]) -> None:
+def _rollback(changes: list[Change]) -> list[Path]:
+    """Best-effort restore of every change in `changes`.
+
+    Attempts every file even if one fails, so a single un-restorable path
+    does not abandon the rest — leaving exactly the half-restored split
+    state the callers rely on this function to eliminate. Never raises:
+    the caller is always mid-handling of a more important error
+    (NginxTestFailed, ReloadFailed, or the original OSError from a failed
+    write), and that is what must reach the operator, not a rollback
+    failure. Un-restorable paths are reported loudly to stderr, one line
+    each, and also returned so the caller can fold them into its own error
+    message — that state needs a human either way.
+    """
+    failed: list[Path] = []
     for change in changes:
-        if change.before is None:
-            change.path.unlink(missing_ok=True)
-        else:
-            _write_atomically(change.path, change.before)
+        try:
+            if change.before is None:
+                change.path.unlink(missing_ok=True)
+            else:
+                _write_atomically(change.path, change.before)
+        except OSError as e:
+            failed.append(change.path)
+            print(f"WARNING: could not restore {change.path}: {e}", file=sys.stderr)
+    return failed
