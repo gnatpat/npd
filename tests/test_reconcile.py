@@ -141,8 +141,13 @@ def test_a_file_without_the_managed_header_is_never_overwritten(tmp_path):
     paths = Paths.under(tmp_path)
     paths.units.mkdir(parents=True)
     paths.systemd_unit_file("x").write_text("[Service]\nExecStart=/hand/written\n")
-    with pytest.raises(ForeignFile, match="x.service"):
+    with pytest.raises(ForeignFile) as excinfo:
         plan_changes(desired(paths))
+    assert str(excinfo.value) == (
+        f"{paths.systemd_unit_file('x')} is an existing systemd unit that "
+        "deploy did not generate (no managed header); move it aside if you "
+        "want deploy to own it"
+    )
 
 
 def test_removal_is_planned_as_a_change_to_none(tmp_path):
@@ -370,10 +375,15 @@ def test_removal_of_a_file_without_the_managed_header_is_refused(tmp_path):
     paths = Paths.under(tmp_path)
     paths.units.mkdir(parents=True)
     paths.systemd_unit_file("x").write_text("[Service]\nExecStart=/hand/written\n")
-    with pytest.raises(ForeignFile, match="x.service"):
+    with pytest.raises(ForeignFile) as excinfo:
         plan_changes(
             (), remove=[OwnedArtifact(SYSTEMD_UNIT, paths.systemd_unit_file("x"))]
         )
+    assert str(excinfo.value) == (
+        f"{paths.systemd_unit_file('x')} is an existing systemd unit that "
+        "deploy did not generate (no managed header); move it aside if you "
+        "want deploy to own it"
+    )
 
 
 # --- Fix round 2: _rollback must itself be fault-tolerant -----------------

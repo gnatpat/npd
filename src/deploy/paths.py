@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,18 +9,25 @@ class ArtifactKind:
     """The one place that knows what a generated artifact is called, what it
     is named on disk, and where it lives. Everything downstream (rendering,
     reconciling, reload dispatch) travels with a kind instead of re-deriving
-    this from a filename or a hardcoded list."""
+    this from a filename or a hardcoded list.
+
+    `directory_attr` names the `Paths` field this kind lives under (rather
+    than a callable) so the dataclass stays plain data — comparable and
+    hashable by value, not by lambda identity."""
 
     label: str  # "systemd unit" — for error messages
     suffix: str  # ".service"
-    directory: Callable[["Paths"], Path]  # where this kind lives
+    directory_attr: str  # "units" — the Paths field this kind lives under
+
+    def directory(self, paths: "Paths") -> Path:
+        return getattr(paths, self.directory_attr)
 
     def file(self, paths: "Paths", app_name: str) -> Path:
         return self.directory(paths) / f"{app_name}{self.suffix}"
 
 
-SYSTEMD_UNIT = ArtifactKind("systemd unit", ".service", lambda p: p.units)
-NGINX_SNIPPET = ArtifactKind("nginx snippet", ".conf", lambda p: p.nginx)
+SYSTEMD_UNIT = ArtifactKind("systemd unit", ".service", "units")
+NGINX_SNIPPET = ArtifactKind("nginx snippet", ".conf", "nginx")
 ARTIFACT_KINDS = (SYSTEMD_UNIT, NGINX_SNIPPET)
 
 

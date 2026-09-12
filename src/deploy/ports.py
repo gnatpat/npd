@@ -1,7 +1,7 @@
 import re
 import sys
 
-from deploy.paths import Paths
+from deploy.paths import SYSTEMD_UNIT, Paths
 
 PORT_RANGE = range(8200, 8300)
 _PORT_LINE = re.compile(r'Environment="?PORT=(\d+)"?', re.MULTILINE)
@@ -20,7 +20,7 @@ def ports_in_use(paths: Paths, *, exclude: str | None = None) -> dict[str, int]:
     found: dict[str, int] = {}
     if not paths.units.is_dir():
         return found
-    for unit in sorted(paths.units.glob("*.service")):
+    for unit in sorted(SYSTEMD_UNIT.directory(paths).glob(f"*{SYSTEMD_UNIT.suffix}")):
         name = unit.stem
         if name == exclude:
             continue
