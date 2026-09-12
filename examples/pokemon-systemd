@@ -1,0 +1,14 @@
+[Unit]
+Description=Blog
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=1
+User=nathan
+ExecStart=/home/nathan/run-pokemon.sh
+
+[Install]
+WantedBy=multi-user.target

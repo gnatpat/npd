@@ -1,0 +1,90 @@
+server {
+
+
+        location / {
+                root /public_html/www;
+                try_files $uri $uri/ @manual;
+        }
+
+        location @manual {
+                root /public_html/manual;
+                try_files $uri $uri/ =404;
+        }
+
+        location /static/ {
+                root /static;
+                try_files $uri =404;
+        }
+
+        location = /favicon.ico {
+                rewrite . /static/favicon.ico;
+        }
+
+        location /shogi/ {
+                proxy_pass http://127.0.0.1:8008/;
+        }
+
+        location /blog {
+                client_max_body_size 10m;
+                proxy_set_header Host $host;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header X-Forwarded-Prefix /blog;
+                proxy_pass http://127.0.0.1:8080/;
+        }
+
+        location /crochet/ {
+                proxy_pass http://127.0.0.1:8152/;
+        }
+
+        location /pokemon {
+                return 301 /pokemon/;
+        }
+        location /pokemon/ {
+                client_max_body_size 10m;
+                proxy_set_header Host $host;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header X-Forwarded-Prefix /pokemon/;
+                proxy_pass http://127.0.0.1:8151;
+        }
+
+
+        error_page 404 /404/;
+        error_page 500 502 503 504 /5xx/;
+
+        server_name natpat.net www.natpat.net;
+
+
+    listen [::]:443 ssl ipv6only=on; # managed by Certbot
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/natpat.net/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/natpat.net/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+
+
+
+}
+server {
+    if ($host = www.natpat.net) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    if ($host = natpat.net) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+        listen 80;
+        listen [::]:80;
+
+        server_name natpat.net www.natpat.net;
+    return 404; # managed by Certbot
+
+
+
+
+}
