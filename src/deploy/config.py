@@ -160,8 +160,17 @@ def _parse_nginx(raw: dict[str, Any] | None, app_type: str) -> NginxConfig | Non
     path = str(raw.get("path", ""))
     if not path.startswith("/"):
         raise ConfigError(f"nginx.path must start with '/', got {path!r}")
+    if path == "/":
+        raise ConfigError(
+            'nginx.path may not be "/" — the site root is served by the static site, '
+            "not by a managed app"
+        )
     if app_type == "static" and "strip_prefix" in raw:
         raise ConfigError("strip_prefix is meaningless for a static app")
+    if app_type == "static" and not path.endswith("/"):
+        raise ConfigError(
+            f'a static app\'s nginx.path must end with "/" (got {path!r})'
+        )
     size = raw.get("client_max_body_size")
     return NginxConfig(
         path=path,

@@ -206,3 +206,28 @@ def test_static_app_with_no_build_section_is_rejected():
         parse_config(
             '[app]\ntype = "static"\n[nginx]\npath = "/x/"\n', repo_name="x"
         )
+
+
+def test_nginx_path_root_is_rejected():
+    with pytest.raises(ConfigError, match="may not be"):
+        parse_config(
+            '[service]\nstart = "run"\n[nginx]\npath = "/"\n', repo_name="x"
+        )
+
+
+def test_static_app_without_trailing_slash_on_path_is_rejected():
+    with pytest.raises(ConfigError, match='must end with "/"'):
+        parse_config(
+            '[app]\ntype = "static"\n[build]\nsteps = []\noutput = "out"\n'
+            '[nginx]\npath = "/boggle"\n',
+            repo_name="x",
+        )
+
+
+def test_static_app_with_trailing_slash_on_path_is_accepted():
+    c = parse_config(
+        '[app]\ntype = "static"\n[build]\nsteps = []\noutput = "out"\n'
+        '[nginx]\npath = "/boggle/"\n',
+        repo_name="x",
+    )
+    assert c.nginx.path == "/boggle/"

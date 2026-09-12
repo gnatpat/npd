@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from deploy.config import parse_config
-from deploy.paths import Paths
+from deploy.paths import MANAGED_HEADER, Paths
 from deploy.render import render_nginx
 
 PATHS = Paths.under(Path("/srv/test"))
@@ -69,7 +69,7 @@ def test_static_app_uses_alias_and_try_files():
 
 def test_every_snippet_starts_with_the_managed_header():
     out = render('[service]\nstart = "run"\n[nginx]\npath = "/blog"\n')
-    assert out.startswith("# Managed by deploy — edits will be overwritten\n")
+    assert out.startswith(MANAGED_HEADER + "\n")
 
 
 def test_snippet_ends_with_exactly_one_newline():
