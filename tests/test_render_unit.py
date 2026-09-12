@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from deploy.config import parse_config
-from deploy.paths import Paths
+from deploy.paths import MANAGED_HEADER, Paths
 from deploy.render import render, render_unit
 
 PATHS = Paths.under(Path("/srv/test"))
@@ -29,7 +29,7 @@ def unit(toml: str = POKEMON, port: int = 8151) -> str:
 
 
 def test_unit_starts_with_the_managed_header():
-    assert unit().startswith("# Managed by deploy — edits will be overwritten\n")
+    assert unit().startswith(MANAGED_HEADER)
 
 
 def test_workdir_is_the_clone_plus_service_workdir():
@@ -44,18 +44,18 @@ def test_workdir_omits_the_subdir_when_unset():
 def test_path_is_explicit_not_a_login_shell():
     out = unit()
     assert (
-        "Environment=PATH=/home/nathan/.local/bin:/usr/local/bin:/usr/bin:/bin\n"
+        'Environment="PATH=/home/nathan/.local/bin:/usr/local/bin:/usr/bin:/bin"\n'
         in out
     )
     assert "bash -lc" not in out
 
 
 def test_port_is_injected_as_an_environment_variable():
-    assert "Environment=PORT=8151\n" in unit()
+    assert 'Environment="PORT=8151"\n' in unit()
 
 
 def test_non_secret_env_becomes_environment_lines():
-    assert "Environment=LOG_LEVEL=info\n" in unit()
+    assert 'Environment="LOG_LEVEL=info"\n' in unit()
 
 
 def test_secrets_come_from_an_environment_file():
@@ -78,7 +78,7 @@ def test_unit_has_an_install_section_so_enable_works_on_a_linked_unit():
     assert "[Install]\nWantedBy=multi-user.target\n" in unit()
 
 
-def test_restart_policy_matches_the_existing_hand_written_units():
+def test_restart_policy_is_always_with_one_second_backoff():
     out = unit()
     assert "Restart=always\n" in out
     assert "RestartSec=1\n" in out
@@ -113,3 +113,12 @@ def test_rendering_a_service_without_a_port_is_a_programming_error():
     cfg = parse_config('[service]\nstart = "run"\n', repo_name="x")
     with pytest.raises(ValueError, match="port"):
         render(cfg, None, PATHS)
+
+
+def test_env_value_with_space_is_quoted_and_survives_intact():
+    cfg = parse_config(
+        '[service]\nstart = "run"\n[env]\nGREETING = "hello there"\n',
+        repo_name="test",
+    )
+    out = render_unit(cfg, 8000, PATHS)
+    assert 'Environment="GREETING=hello there"\n' in out

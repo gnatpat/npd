@@ -5,6 +5,23 @@ from typing import Any
 VALID_TYPES = ("service", "static")
 
 
+def _has_invalid_chars(value: str) -> str | None:
+    """Check for control chars, double quote, or backslash. Return char description or None."""
+    for i, char in enumerate(value):
+        if char < "\x20":  # Control character
+            if char == "\n":
+                return "newline"
+            elif char == "\r":
+                return "carriage return"
+            else:
+                return f"control character (U+{ord(char):04X})"
+        elif char == '"':
+            return "double quote"
+        elif char == "\\":
+            return "backslash"
+    return None
+
+
 class ConfigError(Exception):
     """A deploy.toml that cannot be used. The message is shown to the user."""
 
@@ -81,6 +98,22 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
     secrets_table = _table(raw, "secrets")
     secrets = {str(k): str(v) for k, v in secrets_table.items()}
 
+    # Validate env and secrets for invalid characters
+    for key, value in env.items():
+        invalid = _has_invalid_chars(key)
+        if invalid:
+            raise ConfigError(f"env key {key!r} contains {invalid}")
+        invalid = _has_invalid_chars(value)
+        if invalid:
+            raise ConfigError(f"env value for {key!r} contains {invalid}")
+    for key, value in secrets.items():
+        invalid = _has_invalid_chars(key)
+        if invalid:
+            raise ConfigError(f"secrets key {key!r} contains {invalid}")
+        invalid = _has_invalid_chars(value)
+        if invalid:
+            raise ConfigError(f"secrets value for {key!r} contains {invalid}")
+
     both = sorted(set(env) & set(secrets))
     if both:
         raise ConfigError(
@@ -97,6 +130,8 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
             raise ConfigError("a static app must not declare [secrets]")
         if build is None or not build.output:
             raise ConfigError("a static app requires build.output")
+        if nginx is None:
+            raise ConfigError("a static app requires an [nginx] section with a path")
         service = None
     else:
         service = _parse_service(_table(raw, "service"))
@@ -142,6 +177,9 @@ def _parse_service(raw: dict[str, Any] | None) -> ServiceConfig:
             "service.start may not contain a single quote; it is embedded in the "
             "unit's ExecStart as /bin/bash -c '...'"
         )
+    invalid = _has_invalid_chars(start)
+    if invalid:
+        raise ConfigError(f"service.start contains {invalid}")
     port = raw.get("port")
     if port is not None:
         if isinstance(port, bool) or not isinstance(port, int):

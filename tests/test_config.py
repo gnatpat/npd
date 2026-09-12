@@ -231,3 +231,35 @@ def test_static_app_with_trailing_slash_on_path_is_accepted():
         repo_name="x",
     )
     assert c.nginx.path == "/boggle/"
+
+
+def test_static_app_with_no_nginx_section_is_rejected():
+    with pytest.raises(ConfigError, match="static app requires.*nginx"):
+        parse_config(
+            '[app]\ntype = "static"\n[build]\nsteps = []\noutput = "out"\n',
+            repo_name="x",
+        )
+
+
+def test_env_value_containing_newline_is_rejected():
+    with pytest.raises(ConfigError, match="env.*newline"):
+        parse_config(
+            '[service]\nstart = "run"\n[env]\nGREET = "hello\\nworld"\n',
+            repo_name="x",
+        )
+
+
+def test_env_value_containing_double_quote_is_rejected():
+    with pytest.raises(ConfigError, match='env.*double quote'):
+        parse_config(
+            '[service]\nstart = "run"\n[env]\nGREET = "hello\\"world"\n',
+            repo_name="x",
+        )
+
+
+def test_service_start_containing_newline_is_rejected():
+    with pytest.raises(ConfigError, match="service.start.*newline"):
+        parse_config(
+            '[service]\nstart = "hello\\nworld"\n',
+            repo_name="x",
+        )

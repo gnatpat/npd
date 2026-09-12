@@ -66,11 +66,11 @@ def render_unit(config: AppConfig, port: int, paths: Paths) -> str:
         "Type=simple",
         "User=nathan",
         f"WorkingDirectory={workdir}",
-        f"Environment=PATH={UNIT_PATH}",
-        f"Environment=PORT={port}",
+        f'Environment="PATH={UNIT_PATH}"',
+        f"Environment=\"PORT={port}\"",
     ]
     for key in sorted(config.env):
-        lines.append(f"Environment={key}={config.env[key]}")
+        lines.append(f'Environment="{key}={config.env[key]}"')
     if config.secrets:
         lines.append(f"EnvironmentFile={paths.env_file(config.name)}")
     lines += [
