@@ -182,9 +182,9 @@ The redirect block is emitted only when `path` ends in `/`.
 build correct absolute URLs.
 
 This is not a cosmetic setting and it is the most likely cause of past trouble
-with `/pokemon`. In the current hand-written config, `/blog`, `/shogi` and
-`/crochet` all strip, while `/pokemon` alone does not — pokemon is the only app
-that receives its own prefix. **When writing each app's `deploy.toml`, copy
+with `/pokemon`. In the current hand-written config, `/blog` and `/crochet`
+strip, while `/pokemon` alone does not — pokemon is the only app that receives
+its own prefix. **When writing each app's `deploy.toml`, copy
 whatever that app does today**; changing it silently breaks every route.
 
 systemd unit:
@@ -281,8 +281,9 @@ nginx 1.18.0, `uv` at `/home/nathan/.local/bin/uv`.
 - **`journalctl -u <app>` works as `nathan` with no sudo**, because the units run
   as `User=nathan` and a user can read their own services' logs. `nathan` is in
   neither `adm` nor `systemd-journal`. `deploy logs` needs no privileges.
-- **Ports in use:** 8008 (shogi), 8080 (blog), 8151 (pokemon), 8152 (crochet) —
-  all outside the 8200–8299 allocation range, so no migration collides.
+- **Ports in use:** 8080 (blog), 8151 (pokemon), 8152 (crochet), plus 8008 for
+  shogi until it is decommissioned — all outside the 8200–8299 allocation
+  range, so no migration collides.
 
 ## Commands
 
@@ -420,7 +421,7 @@ Surveyed 2026-09-11, from the running server and the local checkouts.
 
 | App | Repo | Starts via | Port | Route | `strip_prefix` | Data |
 |---|---|---|---|---|---|---|
-| shogi | `gnatpat/shogi` | `~/shogi/run.sh` → `python2.7 shogi_server.py` | 8008 | `/shogi/` | `true` | — |
+| ~~shogi~~ *(decommission)* | `gnatpat/shogi` | `~/shogi/run.sh` → `python2.7 shogi_server.py` | 8008 | `/shogi/` | — | — |
 | blog | `gnatpat/blog` | `uv sync`, venv activate, `INSTANCE_PATH=/blog ./run-blog` | 8080 (implicit) | `/blog` | `true` | `/blog`, outside the clone |
 | crochet | `gnatpat/crochet` | `uvicorn server:app` in `server/` | 8152 | `/crochet/` | `true` | `crochet.db` inside the clone |
 | pokemon | `gnatpat/pokemon` | `uvicorn main:app` in `server/`, plus a secret | 8151 | `/pokemon/` | `false` | `collection.db` inside the clone |
@@ -439,9 +440,9 @@ Notes that affect the migration:
 - **blog already keeps data outside the clone** via `INSTANCE_PATH`. That is the
   pattern for crochet and pokemon to adopt when convenient; the tool does not
   impose it.
-- **shogi is Python 2.7** with no dependency manifest, so `uv` is not involved.
-  An arbitrary `start` command covers it, but it is the app that breaks when the
-  box moves past Ubuntu 20.04.
+- **shogi is out of scope** — a hand-written socket server on Python 2.7, to be
+  decommissioned rather than migrated. With it gone, every remaining app is a
+  `uv`-managed Python project, though `start` stays an arbitrary command.
 - **`site.service` is vestigial** — disabled, no journal entries, and not how the
   site deploys. It should be deleted. It is also a trap: `Type=simple` with
   `Restart=always` around `site.py`, which generates and exits, so starting it
@@ -452,23 +453,51 @@ Notes that affect the migration:
 
 Found while surveying, unrelated to this tool but recorded so it is not lost:
 
-- **`certbot.service` has been failing daily** (verified 2026-09-12). The cert
-  for natpat.net is valid to 2026-10-22, and renewal normally attempts about 30
-  days out — roughly 2026-09-22. Diagnosis needs root:
-  `sudo certbot renew --dry-run`. If it is still broken by then, the site loses
-  TLS.
+- **`certbot.service` fails daily, but natpat.net is not at risk.** Diagnosed
+  2026-09-12: the failure is entirely
+  `/etc/letsencrypt/renewal/bethany-nathan.wedding.conf`, whose domain is now
+  NXDOMAIN, so the http-01 challenge cannot succeed. natpat.net renews cleanly
+  in the same run. The unit's failed state is stale-config noise, not a TLS
+  countdown — but it masks any real failure that appears later, which is the
+  reason to fix it.
 - `fwupd-refresh.service` is also failed; harmless.
-- The `bethany-nathan.wedding` site and `wedding.service` are to be deleted.
+
+### Decommissioning
+
+Neither is part of the tool's scope; both remove work from it.
+
+**`bethany-nathan.wedding`** — the domain is gone; the server still carries its
+config:
+
+1. `sudo certbot delete --cert-name bethany-nathan.wedding` (stops the failures)
+2. remove the nginx site from `sites-enabled` and `sites-available`, `nginx -t`,
+   reload
+3. `sudo systemctl stop wedding && sudo systemctl disable wedding`, remove
+   `/etc/systemd/system/wedding.service`
+4. remove `~/run-wedding.sh`; **back up `/wedding/wedding.sqlite` and
+   `/wedding/backups/` before deleting `/wedding`**
+
+**shogi** — to be taken down rather than migrated. A from-scratch socket server
+on Python 2.7; keeping it alive is the only thing that would force the tool to
+support non-`uv` Python.
+
+1. `sudo systemctl stop shogi && sudo systemctl disable shogi`, remove
+   `/etc/systemd/system/shogi.service`
+2. remove the `location /shogi/` block from `sites-available/natpat.net`,
+   `nginx -t`, reload
+3. keep or archive `~/shogi` and the repo; nothing else depends on it
 
 ## Migration runbook
 
-Per app, one at a time, starting with pokemon. Downtime is the gap between
+Four apps migrate: blog, crochet and pokemon as services, boggle as static.
+shogi and wedding are decommissioned instead; site keeps its bare-repo hook.
+One at a time, starting with pokemon. Downtime is the gap between
 steps 3 and 5.
 
 1. Add `deploy.toml` to the app's repo with `port` pinned to the port it uses
    today, and `strip_prefix` set to match the app's current `proxy_pass` line —
    a trailing slash means `strip_prefix = true`. Getting this wrong breaks every
-   route in the app. Today: `/blog`, `/shogi` and `/crochet` are `true`,
+   route in the app. Today: `/blog` and `/crochet` are `true`,
    `/pokemon` is `false`. Verify with `deploy dev --prefix` before deploying.
    Commit and push.
 2. `mv ~/pokemon ~/apps/pokemon` — **move, do not re-clone**, because app data
