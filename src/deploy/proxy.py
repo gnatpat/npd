@@ -1,3 +1,17 @@
+"""A local reverse proxy that reproduces, for `deploy dev --prefix`, the
+prefix-stripping and header-forwarding behaviour that
+`render.render_nginx_snippet` generates for production nginx — so prefix bugs
+(e.g. an app that assumes it owns `/`) surface on the laptop instead of on
+first deploy.
+
+Deliberate limitations:
+- The whole upstream response is buffered in memory before it is forwarded,
+  so streaming responses and Server-Sent Events will not work through
+  `--prefix` (the app still runs fine without `--prefix`).
+- This exists only to mirror the generated nginx snippet's prefix and
+  forwarded-header behaviour; it is not a general-purpose proxy.
+"""
+
 import http.client
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -70,10 +84,27 @@ def _handler(nginx: NginxConfig, upstream_port: int) -> type[BaseHTTPRequestHand
                 self.send_error(404)
                 return
 
-            length = int(self.headers.get("Content-Length") or 0)
+            if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
+                # Real chunked decoding is out of scope for a dev proxy;
+                # failing clearly beats silently dropping the body and
+                # corrupting the next request on this keep-alive connection.
+                self.send_error(
+                    411,
+                    "chunked request bodies are not supported by the dev proxy",
+                )
+                return
+
+            raw_length = self.headers.get("Content-Length")
+            try:
+                length = int(raw_length) if raw_length is not None else 0
+                if length < 0:
+                    raise ValueError("negative Content-Length")
+            except ValueError:
+                self.send_error(400, "invalid Content-Length")
+                return
+
             body = self.rfile.read(length) if length else None
 
-            conn = http.client.HTTPConnection("127.0.0.1", upstream_port)
             headers = {
                 k: v
                 for k, v in self.headers.items()
@@ -84,13 +115,17 @@ def _handler(nginx: NginxConfig, upstream_port: int) -> type[BaseHTTPRequestHand
                     nginx, self.headers.get("Host", ""), self.client_address[0]
                 )
             )
+
+            conn = http.client.HTTPConnection("127.0.0.1", upstream_port)
             try:
                 conn.request(self.command, decision.path, body=body, headers=headers)
                 upstream = conn.getresponse()
                 payload = upstream.read()
-            except OSError as exc:
+            except (OSError, http.client.HTTPException) as exc:
                 self.send_error(502, f"upstream unreachable: {exc}")
                 return
+            finally:
+                conn.close()
 
             self.send_response(upstream.status)
             for key, value in upstream.getheaders():

@@ -132,3 +132,93 @@ def test_end_to_end_strips_the_prefix_when_configured():
 
     upstream.shutdown()
     proxy.shutdown()
+
+
+# --- Fix round 1: defensive-handling tests -----------------------------
+
+import socket
+
+from deploy.proxy import _handler
+
+
+def _raw_request(port: int, request: bytes) -> bytes:
+    """Send a hand-built HTTP request and return whatever comes back. Used
+    where urllib would refuse to send a malformed request itself (bad
+    Content-Length, chunked without real chunk framing)."""
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        sock.sendall(request)
+        sock.settimeout(5)
+        return sock.recv(65536)
+
+
+def _start_broken_upstream() -> int:
+    """A stub upstream that accepts one connection, sends a response that
+    lies about its own length, then closes early -- provoking
+    http.client.IncompleteRead, which is not an OSError."""
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_sock.bind(("127.0.0.1", 0))
+    server_sock.listen(1)
+    port = server_sock.getsockname()[1]
+
+    def handle():
+        conn, _ = server_sock.accept()
+        try:
+            conn.recv(4096)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort")
+        finally:
+            conn.close()
+            server_sock.close()
+
+    threading.Thread(target=handle, daemon=True).start()
+    return port
+
+
+def test_malformed_content_length_gets_400_not_a_reset():
+    nginx = NginxConfig(path="/pokemon/", strip_prefix=False)
+    proxy = ThreadingHTTPServer(("127.0.0.1", 0), _handler(nginx, 1))
+    proxy_port = _start(proxy)
+
+    request = (
+        b"POST /pokemon/x HTTP/1.1\r\n"
+        b"Host: localhost\r\n"
+        b"Content-Length: notanumber\r\n"
+        b"Connection: close\r\n"
+        b"\r\n"
+    )
+    response = _raw_request(proxy_port, request)
+    assert response.startswith(b"HTTP/1.1 400")
+
+    proxy.shutdown()
+
+
+def test_chunked_request_body_gets_411():
+    nginx = NginxConfig(path="/pokemon/", strip_prefix=False)
+    proxy = ThreadingHTTPServer(("127.0.0.1", 0), _handler(nginx, 1))
+    proxy_port = _start(proxy)
+
+    request = (
+        b"POST /pokemon/x HTTP/1.1\r\n"
+        b"Host: localhost\r\n"
+        b"Transfer-Encoding: chunked\r\n"
+        b"Connection: close\r\n"
+        b"\r\n"
+        b"0\r\n\r\n"
+    )
+    response = _raw_request(proxy_port, request)
+    assert response.startswith(b"HTTP/1.1 411")
+
+    proxy.shutdown()
+
+
+def test_a_broken_upstream_produces_502_not_a_traceback():
+    upstream_port = _start_broken_upstream()
+
+    nginx = NginxConfig(path="/pokemon/", strip_prefix=False)
+    proxy = ThreadingHTTPServer(("127.0.0.1", 0), _handler(nginx, upstream_port))
+    proxy_port = _start(proxy)
+
+    request = b"GET /pokemon/cards HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    response = _raw_request(proxy_port, request)
+    assert response.startswith(b"HTTP/1.1 502")
+
+    proxy.shutdown()

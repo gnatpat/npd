@@ -1,6 +1,7 @@
 import os
 import shlex
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -73,9 +74,14 @@ def run_dev(
     if config.is_static:
         output = repo / config.build.output
         print(f"[dev] serving {output} on http://127.0.0.1:{port}")
-        return subprocess.call(
-            ["python", "-m", "http.server", str(port), "--directory", str(output)]
+        # sys.executable, not a bare "python": the target server (and some
+        # laptops) only have python3 on PATH, but this process is already
+        # running under an interpreter that is guaranteed to exist.
+        result = runner.run(
+            [sys.executable, "-m", "http.server", str(port), "--directory", str(output)],
+            check=False,
         )
+        return result.returncode
 
     app_port = port
     if prefix:

@@ -1,9 +1,11 @@
+import sys
 from pathlib import Path
 
 import pytest
 
 from deploy.config import parse_config
-from deploy.dev import MissingSecrets, dev_command, dev_workdir, resolve_env
+from deploy.dev import MissingSecrets, dev_command, dev_workdir, resolve_env, run_dev
+from deploy.runner import RecordingRunner
 
 WITH_SECRET = """
 [service]
@@ -76,3 +78,20 @@ def test_a_static_app_has_no_start_command():
     )
     with pytest.raises(ValueError, match="static"):
         dev_command(c)
+
+
+def test_static_dev_serves_with_sys_executable_not_a_bare_python():
+    # Regression: a bare "python" does not exist on the target server (only
+    # python3). Assert on the argv the runner was asked to run, rather than
+    # actually starting a server.
+    c = cfg(
+        '[app]\ntype = "static"\n[build]\nsteps = []\noutput = "out"\n'
+        '[nginx]\npath = "/site/"\n'
+    )
+    runner = RecordingRunner()
+    run_dev(c, Path("/repo"), port=8000, build=False, prefix=False, runner=runner)
+
+    assert len(runner.calls) == 1
+    argv = runner.calls[0]
+    assert argv[0] == sys.executable
+    assert argv[1:4] == ["-m", "http.server", "8000"]
