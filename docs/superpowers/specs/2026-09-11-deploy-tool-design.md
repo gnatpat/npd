@@ -211,15 +211,37 @@ WantedBy=multi-user.target
 `PATH` is set explicitly rather than using a login shell, so units do not
 silently depend on `.bashrc` locating `uv`.
 
-Generated services bind `127.0.0.1`, not `0.0.0.0`. The pokemon app currently
-binds `0.0.0.0` and is therefore reachable directly on `:8151`, bypassing nginx
-and TLS; migrating it closes that.
+Generated services bind `127.0.0.1`, not `0.0.0.0`. All four current apps bind
+`0.0.0.0`; ufw blocks those ports from the internet today (verified: 8008, 8080,
+8151 and 8152 are all filtered externally), so this is defence in depth rather
+than closing an open hole — it removes the dependency on a firewall rule staying
+correct.
 
 Units are registered once per app with `sudo systemctl link
 /etc/deploy/systemd/<name>.service`, which exists for units outside the normal
-search path. **This must be verified on the box before anything else is built** —
-if `link` plus `enable` does not behave, the fallback is to run the tool under
-`sudo` and shell out to `runuser -u nathan` for git and build steps.
+search path. **Verified on the box, 2026-09-11** (systemd 245, Ubuntu 20.04) —
+see Verified facts below. The `sudo`-plus-`runuser` fallback is not needed.
+
+## Verified facts
+
+Checked directly on `natpat.net` on 2026-09-11. Ubuntu 20.04, systemd 245,
+nginx 1.18.0, `uv` at `/home/nathan/.local/bin/uv`.
+
+- **`systemctl link` works.** Linking a unit from outside the search path,
+  `enable` honouring its `[Install]` section, `start`, and — the property
+  reconcile depends on — editing the file in place followed by `daemon-reload`
+  causes systemd to pick up the new contents. `disable` removes both the unit
+  symlink and the `multi-user.target.wants` symlink, leaving no trace.
+- **`systemctl` is already passwordless:** `/etc/sudoers.d/site` grants
+  `(ALL) NOPASSWD: /usr/bin/systemctl`.
+- **`nginx -t` and reload are not.** They prompt for a password, so
+  `/etc/sudoers.d/deploy` granting them is genuinely required; the tool cannot
+  reconcile nginx until it exists.
+- **`journalctl -u <app>` works as `nathan` with no sudo**, because the units run
+  as `User=nathan` and a user can read their own services' logs. `nathan` is in
+  neither `adm` nor `systemd-journal`. `deploy logs` needs no privileges.
+- **Ports in use:** 8008 (shogi), 8080 (blog), 8151 (pokemon), 8152 (crochet) —
+  all outside the 8200–8299 allocation range, so no migration collides.
 
 ## Commands
 
@@ -380,5 +402,11 @@ The static site generator is not migrated. It is served directly by nginx from
   remaining fix is per-app subdomains, which needs a wildcard DNS record and a
   wildcard certificate, and would change `[nginx]` to accept `subdomain` as an
   alternative to `path`.
+- **A second domain exists.** The box also serves `bethany-nathan.wedding` from
+  its own nginx site, with a `wedding.service` unit. The `include
+  /etc/nginx/deploy.d/*.conf;` design wires apps into the `natpat.net` server
+  block only, so an app on the wedding domain is out of scope. Supporting it
+  would mean a per-domain include directory and a `domain` key in `[nginx]`.
+  Not needed today; noted so the assumption is explicit.
 - **Secret rotation** has no tooling. Editing `/etc/deploy/env/<app>.env` by hand
   and restarting is the process.
