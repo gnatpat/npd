@@ -163,3 +163,46 @@ def test_unknown_app_type_is_rejected():
 def test_invalid_toml_raises_config_error():
     with pytest.raises(ConfigError):
         parse_config("this is not toml {{{", repo_name="x")
+
+
+def test_build_steps_as_string_is_rejected():
+    with pytest.raises(ConfigError, match="build.steps"):
+        parse_config(
+            '[service]\nstart = "run"\n[build]\nsteps = "npm install"\n', repo_name="x"
+        )
+
+
+def test_service_start_as_non_string_is_rejected():
+    with pytest.raises(ConfigError, match="service.start"):
+        parse_config('[service]\nstart = true\n', repo_name="x")
+
+
+def test_service_port_as_string_is_rejected():
+    with pytest.raises(ConfigError, match="service.port"):
+        parse_config(
+            '[service]\nstart = "run"\nport = "abc"\n', repo_name="x"
+        )
+
+
+def test_service_port_as_bool_is_rejected():
+    with pytest.raises(ConfigError, match="service.port"):
+        parse_config('[service]\nstart = "run"\nport = true\n', repo_name="x")
+
+
+def test_scalar_app_section_is_rejected():
+    with pytest.raises(ConfigError, match=r"\[app\]"):
+        parse_config('app = "x"\n', repo_name="x")
+
+
+def test_scalar_env_section_is_rejected():
+    with pytest.raises(ConfigError, match=r"\[env\]"):
+        parse_config(
+            'env = "x"\n[service]\nstart = "run"\n', repo_name="x"
+        )
+
+
+def test_static_app_with_no_build_section_is_rejected():
+    with pytest.raises(ConfigError, match="build.output"):
+        parse_config(
+            '[app]\ntype = "static"\n[nginx]\npath = "/x/"\n', repo_name="x"
+        )

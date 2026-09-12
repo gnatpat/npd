@@ -9,6 +9,21 @@ class ConfigError(Exception):
     """A deploy.toml that cannot be used. The message is shown to the user."""
 
 
+def _table(raw: dict[str, Any], key: str) -> dict[str, Any]:
+    """Extract a table from the config, raising ConfigError if it's not a dict."""
+    value = raw.get(key, {})
+    if not isinstance(value, dict):
+        raise ConfigError(f"[{key}] must be a table, got {type(value).__name__}")
+    return value
+
+
+def _string(value: Any, key: str, where: str) -> str:
+    """Validate that a value is a string, raising ConfigError if not."""
+    if not isinstance(value, str):
+        raise ConfigError(f"{where}.{key} must be a string, got {type(value).__name__}")
+    return value
+
+
 @dataclass(frozen=True)
 class BuildConfig:
     steps: tuple[str, ...]
@@ -53,7 +68,7 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"deploy.toml is not valid TOML: {exc}") from exc
 
-    app = raw.get("app", {})
+    app = _table(raw, "app")
     app_type = app.get("type", "service")
     if app_type not in VALID_TYPES:
         raise ConfigError(
@@ -61,8 +76,10 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
         )
 
     name = app.get("name") or repo_name
-    env = {str(k): str(v) for k, v in raw.get("env", {}).items()}
-    secrets = {str(k): str(v) for k, v in raw.get("secrets", {}).items()}
+    env_table = _table(raw, "env")
+    env = {str(k): str(v) for k, v in env_table.items()}
+    secrets_table = _table(raw, "secrets")
+    secrets = {str(k): str(v) for k, v in secrets_table.items()}
 
     both = sorted(set(env) & set(secrets))
     if both:
@@ -70,8 +87,8 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
             f"{', '.join(both)} appears in both [env] and [secrets]; pick one"
         )
 
-    build = _parse_build(raw.get("build"))
-    nginx = _parse_nginx(raw.get("nginx"), app_type)
+    build = _parse_build(_table(raw, "build"))
+    nginx = _parse_nginx(_table(raw, "nginx"), app_type)
 
     if app_type == "static":
         if "service" in raw:
@@ -82,9 +99,9 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
             raise ConfigError("a static app requires build.output")
         service = None
     else:
-        service = _parse_service(raw.get("service"))
+        service = _parse_service(_table(raw, "service"))
 
-    dev = raw.get("dev", {})
+    dev = _table(raw, "dev")
     dev_start = dev.get("start")
 
     return AppConfig(
@@ -100,9 +117,12 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
 
 
 def _parse_build(raw: dict[str, Any] | None) -> BuildConfig | None:
-    if raw is None:
+    if not raw:
         return None
-    steps = tuple(str(s) for s in raw.get("steps", []))
+    steps_raw = raw.get("steps", [])
+    if not isinstance(steps_raw, list):
+        raise ConfigError(f"build.steps must be a list, got {type(steps_raw).__name__}")
+    steps = tuple(str(s) for s in steps_raw)
     return BuildConfig(
         steps=steps,
         workdir=str(raw.get("workdir", "")),
@@ -111,27 +131,31 @@ def _parse_build(raw: dict[str, Any] | None) -> BuildConfig | None:
 
 
 def _parse_service(raw: dict[str, Any] | None) -> ServiceConfig:
-    if raw is None:
+    if not raw:
         raise ConfigError("a service app requires a [service] section")
     start = raw.get("start")
     if not start:
         raise ConfigError("service.start is required")
+    start = _string(start, "start", "service")
     if "'" in start:
         raise ConfigError(
             "service.start may not contain a single quote; it is embedded in the "
             "unit's ExecStart as /bin/bash -c '...'"
         )
     port = raw.get("port")
+    if port is not None:
+        if isinstance(port, bool) or not isinstance(port, int):
+            raise ConfigError(f"service.port must be an integer, got {type(port).__name__}")
     return ServiceConfig(
-        start=str(start),
+        start=start,
         workdir=str(raw.get("workdir", "")),
         health_path=raw.get("health_path"),
-        port=int(port) if port is not None else None,
+        port=port,
     )
 
 
 def _parse_nginx(raw: dict[str, Any] | None, app_type: str) -> NginxConfig | None:
-    if raw is None:
+    if not raw:
         return None
     path = str(raw.get("path", ""))
     if not path.startswith("/"):
