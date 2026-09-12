@@ -3579,11 +3579,12 @@ steps = ["npm install", "npm run build"]
 workdir = "server"
 start = "uv run uvicorn main:app --host 127.0.0.1 --port $PORT"
 port = 8151
-# No health_path: pokemon is the one app with strip_prefix = false, so nginx
-# passes /pokemon/... through untouched and the app's routes live under
-# /pokemon/ — a GET of bare "/" very likely 404s. With health_path omitted a
-# successful TCP connect is the check, which is what every other app gets.
-# Add one only after confirming what the app actually answers (step 4a).
+# Measured on the server, 2026-09-12: pokemon answers 404 on "/" and 200 on
+# "/pokemon/". It is the one app with strip_prefix = false, so it receives its
+# own prefix and its routes live under it. health_path = "/" — as this plan
+# originally said — would have reported FAILED mid-cutover on a deploy that
+# actually worked.
+health_path = "/pokemon/"
 
 [nginx]
 path = "/pokemon/"
@@ -3613,7 +3614,23 @@ this app receives its own prefix — leave `health_path` out, or set it to a pat
 that did answer. Repeat for each app you migrate: `/blog` and `/crochet` strip
 their prefix so `/` is the right probe for them, but confirm rather than assume.
 
-- [ ] **Step 4b: Check the clone is clean, or every future update will fail**
+- [ ] **Step 4b: Commit pokemon's dirty package-lock.json**
+
+Measured on the server, 2026-09-12: `~/pokemon` has one modified file,
+`pokemon-cards-app/package-lock.json` — almost certainly rewritten by an
+`npm install` during an earlier manual deploy. `npd update` refuses a dirty
+tree, so this blocks every future update of this app until it is dealt with.
+
+```bash
+cd ~/pokemon && git status --porcelain     # expect: M pokemon-cards-app/package-lock.json
+git diff pokemon-cards-app/package-lock.json | head
+```
+
+Commit it if the change is legitimate (it usually is — a lockfile update
+belongs in the repo), or `git checkout` it if it is churn. `~/crochet` and
+`~/blog` were both clean, so this is pokemon-only.
+
+- [ ] **Step 4c: Check the clone is clean, or every future update will fail**
 
 `npd update` refuses to pull over a dirty tree, and it counts UNTRACKED
 files as dirty — deliberately, because live SQLite databases sit inside these
