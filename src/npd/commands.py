@@ -12,9 +12,15 @@ from npd import settings
 from npd.config import AppConfig, ConfigError, parse_config
 from npd.gitrepo import clone, head_commit, pull_ff_only, remote_url, repo_url
 from npd.health import wait_healthy
-from npd.paths import Paths
+from npd.paths import ARTIFACT_KINDS, Paths
 from npd.ports import allocate_port, ports_in_use
-from npd.reconcile import apply_changes, owned_artifacts, plan_app_changes, plan_changes
+from npd.reconcile import (
+    Change,
+    apply_changes,
+    owned_artifacts,
+    plan_app_changes,
+    plan_changes,
+)
 from npd.render import render
 from npd.runner import Runner
 from npd.secrets import merge_secrets, missing_secrets, read_env_file
@@ -65,7 +71,11 @@ def _run_build(config: AppConfig, repo: Path) -> None:
         return
     workdir = repo / config.build.workdir if config.build.workdir else repo
     for step in config.build.steps:
-        print(f"[build] {step}")
+        # flush=True: this immediately precedes a subprocess.call, which
+        # writes straight to the terminal fd and bypasses Python's stdout
+        # buffer -- without it, when stdout isn't a tty, this line could
+        # print AFTER the build step's own output.
+        print(f"[build] {step}", flush=True)
         # A build step (npm install, a compiler, ...) can run for minutes;
         # its output is for the operator to watch as it happens, not for
         # this tool to consume -- going through Runner would capture it
@@ -102,8 +112,55 @@ def _tail_journal(name: str) -> None:
     (RealRunner sets capture_output=True) and throw it away, leaving "FAILED
     health check" on screen with no diagnostics after it. Use
     subprocess.call directly, as logs() does, so the lines reach the
-    terminal."""
-    subprocess.call(["journalctl", "-u", name, "-n", "20", "--no-pager"])
+    terminal.
+
+    -q suppresses journalctl's own "Hint: You are currently not seeing
+    messages from other users..." preamble, which is noise here: the
+    operator just watched this exact unit fail its health check and does
+    not need to be told about permissions on messages from OTHER users.
+    """
+    subprocess.call(["journalctl", "-u", name, "-n", "20", "--no-pager", "-q"])
+
+
+def _change_symbol(change: Change) -> str:
+    if change.before is None:
+        return "+"
+    if change.after is None:
+        return "-"
+    return "~"
+
+
+def _report_changes(name: str, changes: list[Change]) -> None:
+    """What is about to be written. Printed BEFORE applying, so that if
+    applying fails the operator can see what was being attempted.
+
+    Listed in ARTIFACT_KINDS order (unit, then nginx) rather than the path
+    order plan_changes returns them in -- plan_changes sorts by path for its
+    own (unrelated) reasons, and on the real filesystem that happens to put
+    /etc/nginx/... ahead of /etc/npd/..., which reads backwards here."""
+    if not changes:
+        print(f"{name}: config unchanged", flush=True)
+        return
+    print(f"{name}: writing config", flush=True)
+    by_kind = {kind: i for i, kind in enumerate(ARTIFACT_KINDS)}
+    for change in sorted(changes, key=lambda c: by_kind[c.kind]):
+        print(f"  {_change_symbol(change)} {change.path}", flush=True)
+
+
+def _report_actions(name: str, actions: set[str]) -> None:
+    """What apply_changes actually reloaded. Only the lines for actions
+    that actually occurred are printed -- that's the whole point: an update
+    that only touched the unit must not claim nginx was reloaded."""
+    if "nginx" in actions:
+        print(f"{name}: nginx -t passed, reloaded nginx", flush=True)
+    if "daemon-reload" in actions:
+        print(f"{name}: reloaded systemd", flush=True)
+
+
+def _waiting_message(name: str, port: int, health_path: str | None) -> str:
+    if health_path:
+        return f"{name}: waiting for 127.0.0.1:{port}{health_path} …"
+    return f"{name}: waiting for port {port} to accept connections …"
 
 
 def _deploy(
@@ -145,7 +202,9 @@ def _deploy(
     # becomes static (or drops its [nginx] section) has its stale file removed
     # instead of left on disk holding a port forever.
     changes = plan_app_changes(config.name, render(config, port, paths, commit), paths)
-    apply_changes(changes, runner=runner)
+    _report_changes(config.name, changes)
+    actions = apply_changes(changes, runner=runner)
+    _report_actions(config.name, actions)
 
     if config.is_static:
         print(f"{config.name}: published")
@@ -173,11 +232,13 @@ def _deploy(
     # do, and the partial-failure retry above must end with the service
     # actually running, not merely registered.
     runner.run(["sudo", SYSTEMCTL, "restart", config.name])
+    print(f"{config.name}: linked, enabled and restarted {config.name}.service")
 
     assert port is not None
     health_path = config.service.health_path if config.service else None
+    print(_waiting_message(config.name, port, health_path), flush=True)
     if not wait_healthy(port, health_path):
-        print(f"{config.name}: FAILED health check on port {port}")
+        print(f"{config.name}: FAILED health check on port {port}", flush=True)
         # The service is deliberately left running either way.
         _tail_journal(config.name)
         return 1
@@ -412,14 +473,17 @@ def diff(name: str | None, *, paths: Paths, runner: Runner) -> int:
 
 def restart(name: str, *, paths: Paths, runner: Runner) -> int:
     runner.run(["sudo", SYSTEMCTL, "restart", name])
+    print(f"{name}: restarted {name}.service")
     config, _ = load_app(name, paths=paths, runner=runner)
     port = ports_in_use(paths).get(name)
     if port is None:
         return 0
     health_path = config.service.health_path if config.service else None
+    print(_waiting_message(name, port, health_path), flush=True)
     if wait_healthy(port, health_path):
+        print(f"{name}: healthy on port {port}")
         return 0
-    print(f"{name}: FAILED health check on port {port} after restart")
+    print(f"{name}: FAILED health check on port {port} after restart", flush=True)
     _tail_journal(name)
     return 1
 
@@ -480,7 +544,9 @@ def remove(
             )
 
     changes = plan_changes((), remove=owned)
-    apply_changes(changes, runner=runner)
+    _report_changes(name, changes)
+    actions = apply_changes(changes, runner=runner)
+    _report_actions(name, actions)
 
     if purge:
         # published_paths, not a hardcoded pair: a static app also leaves

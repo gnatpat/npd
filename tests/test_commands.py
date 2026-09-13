@@ -532,3 +532,146 @@ def test_purge_of_a_static_app_deletes_the_published_build_output(tmp_path):
     assert not (paths.static / "boggle").is_symlink()
     assert not (paths.static / "boggle-abc123def456").exists()
     assert not paths.clone_dir("boggle").exists()
+
+
+# --- terminal narration (previously-silent steps must be reported) --------
+
+
+def test_install_narrates_writes_reloads_link_and_health_in_order(tmp_path, capsys):
+    """The gap this whole change closes: on a real install, everything
+    between the build finishing and the health check result used to be
+    silent. Pin the exact lines and their order."""
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    capsys.readouterr()
+
+    assert install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer()) == 0
+    out = capsys.readouterr().out.splitlines()
+
+    unit = str(paths.systemd_unit_file("pokemon"))
+    nginx = str(paths.nginx_snippet_file("pokemon"))
+    assert out == [
+        "pokemon: writing config",
+        f"  + {unit}",
+        f"  + {nginx}",
+        "pokemon: nginx -t passed, reloaded nginx",
+        "pokemon: reloaded systemd",
+        "pokemon: linked, enabled and restarted pokemon.service",
+        "pokemon: waiting for port 8151 to accept connections …",
+        "pokemon: healthy on port 8151",
+    ]
+
+
+def test_install_waits_by_url_when_a_health_path_is_configured(tmp_path, capsys):
+    paths = Paths.under(tmp_path)
+    toml = POKEMON_TOML.replace(
+        'port = 8151\n', 'port = 8151\nhealth_path = "/pokemon/"\n'
+    )
+    make_repo(paths, "pokemon", toml)
+    capsys.readouterr()
+
+    assert install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer()) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert "pokemon: waiting for 127.0.0.1:8151/pokemon/ …" in out
+
+
+def test_update_that_only_changes_the_unit_does_not_report_an_nginx_reload(
+    tmp_path, capsys
+):
+    """A new commit stamps NPD_COMMIT into the unit but never touches the
+    rendered nginx snippet, so nginx must never be reloaded for it -- and
+    the operator must be able to see, not just infer, that it wasn't."""
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
+    capsys.readouterr()
+
+    runner = MovingRunner()
+    assert update("pokemon", paths=paths, runner=runner, prompt=answer()) == 0
+    out = capsys.readouterr().out.splitlines()
+
+    unit = str(paths.systemd_unit_file("pokemon"))
+    assert out[0] == "pokemon: writing config"
+    assert out[1] == f"  ~ {unit}"
+    assert not any("nginx" in line for line in out)
+    assert "pokemon: reloaded systemd" in out
+
+
+def test_update_with_no_config_change_reports_config_unchanged(tmp_path, capsys):
+    """A static app's nginx snippet carries no commit stamp, so pulling new
+    code that doesn't touch [nginx] leaves nothing to write. The reader
+    must be told config was left alone on purpose, not left to wonder
+    whether the step silently ran or was skipped."""
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "boggle", STATIC_TOML, static=True)
+    sha1 = "abc123def4567890abc123def4567890abc123d"
+    sha2 = "def4567890abc123def4567890abc123def4567"
+    install(
+        "boggle",
+        paths=paths,
+        runner=RecordingRunner(stdout={"rev-parse": f"{sha1}\n"}),
+        prompt=answer(),
+    )
+    capsys.readouterr()
+
+    runner = OneTimeMoveRunner(sha1, sha2)
+    assert update("boggle", paths=paths, runner=runner, prompt=answer()) == 0
+    out = capsys.readouterr().out.splitlines()
+
+    assert "boggle: config unchanged" in out
+    assert not any("reloaded" in line for line in out)
+    assert out[-1] == "boggle: published"
+
+
+def test_restart_prints_restarted_and_healthy(tmp_path, capsys, monkeypatch):
+    """restart() used to print nothing at all on success."""
+    from npd.commands import restart
+
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
+    capsys.readouterr()
+
+    monkeypatch.setattr("npd.commands.wait_healthy", lambda *a, **k: True)
+    assert restart("pokemon", paths=paths, runner=RecordingRunner()) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out == [
+        "pokemon: restarted pokemon.service",
+        "pokemon: waiting for port 8151 to accept connections …",
+        "pokemon: healthy on port 8151",
+    ]
+
+
+def test_remove_prints_the_files_it_deletes(tmp_path, capsys):
+    from npd.commands import remove
+
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
+    capsys.readouterr()
+
+    unit = str(paths.systemd_unit_file("pokemon"))
+    nginx = str(paths.nginx_snippet_file("pokemon"))
+    assert remove(
+        "pokemon", paths=paths, runner=RecordingRunner(), purge=False, confirm=lambda m: True
+    ) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert f"  - {unit}" in out
+    assert f"  - {nginx}" in out
+    assert out[-1] == "pokemon: removed"
+    assert out.index(f"  - {unit}") < out.index("pokemon: removed")
+
+
+def test_tail_journal_passes_quiet_flag(monkeypatch):
+    """journalctl's own "Hint: You are currently not seeing messages from
+    other users..." preamble is noise right after a FAILED health check;
+    -q suppresses it."""
+    from npd.commands import _tail_journal
+
+    calls = []
+    monkeypatch.setattr(
+        "npd.commands.subprocess.call", lambda argv: calls.append(argv) or 0
+    )
+    _tail_journal("pokemon")
+    assert len(calls) == 1
+    assert "-q" in calls[0]
