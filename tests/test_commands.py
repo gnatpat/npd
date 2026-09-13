@@ -1,5 +1,6 @@
 import re
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -656,10 +657,91 @@ def test_remove_prints_the_files_it_deletes(tmp_path, capsys):
         "pokemon", paths=paths, runner=RecordingRunner(), purge=False, confirm=lambda m: True
     ) == 0
     out = capsys.readouterr().out.splitlines()
+    assert out[0] == "pokemon: removing config"
     assert f"  - {unit}" in out
     assert f"  - {nginx}" in out
     assert out[-1] == "pokemon: removed"
     assert out.index(f"  - {unit}") < out.index("pokemon: removed")
+
+
+def test_report_changes_picks_the_heading_verb_from_the_change_set(capsys):
+    """The heading must describe what the changes actually are: all
+    removals (remove()'s case) is not "writing", and a mix is neither
+    "writing" nor "removing" outright."""
+    from npd.commands import _report_changes
+    from npd.paths import NGINX_SNIPPET, SYSTEMD_UNIT
+    from npd.reconcile import Change
+
+    unit_path = Path("/etc/npd/systemd/pokemon.service")
+    nginx_path = Path("/etc/nginx/npd.d/pokemon.conf")
+
+    _report_changes("pokemon", [Change(unit_path, "before", None, SYSTEMD_UNIT)])
+    assert capsys.readouterr().out.splitlines()[0] == "pokemon: removing config"
+
+    _report_changes("pokemon", [Change(unit_path, None, "after", SYSTEMD_UNIT)])
+    assert capsys.readouterr().out.splitlines()[0] == "pokemon: writing config"
+
+    _report_changes("pokemon", [Change(unit_path, "before", "after", SYSTEMD_UNIT)])
+    assert capsys.readouterr().out.splitlines()[0] == "pokemon: writing config"
+
+    _report_changes(
+        "pokemon",
+        [
+            Change(unit_path, "before", "after", SYSTEMD_UNIT),
+            Change(nginx_path, "before", None, NGINX_SNIPPET),
+        ],
+    )
+    assert capsys.readouterr().out.splitlines()[0] == "pokemon: updating config"
+
+
+def test_a_second_non_purge_remove_reports_leftovers_and_exits_nonzero(
+    tmp_path, capsys
+):
+    """A second `remove` after the generated config is already gone (clone
+    and env file still present) must not claim success: nothing was
+    removed this time, and "config unchanged" is install/update's phrase,
+    not remove's."""
+    from npd.commands import remove
+
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
+    assert remove(
+        "pokemon", paths=paths, runner=RecordingRunner(), purge=False, confirm=lambda m: True
+    ) == 0
+    assert paths.clone_dir("pokemon").exists()
+    capsys.readouterr()
+
+    assert remove(
+        "pokemon", paths=paths, runner=RecordingRunner(), purge=False, confirm=lambda m: True
+    ) == 1
+    out, err = capsys.readouterr()
+    assert (
+        "pokemon: nothing to remove — generated config is already gone "
+        "(use --purge to also delete the clone and secrets)" in err
+    )
+    assert "config unchanged" not in out
+    assert "removed" not in out
+
+
+def test_a_second_purge_remove_still_cleans_up_the_clone_and_secrets(tmp_path):
+    """--purge must still work once the generated config is already gone --
+    that leftover clone/env file is exactly what --purge is for."""
+    from npd.commands import remove
+
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
+    remove(
+        "pokemon", paths=paths, runner=RecordingRunner(), purge=False, confirm=lambda m: True
+    )
+    assert paths.clone_dir("pokemon").exists()
+
+    assert remove(
+        "pokemon", paths=paths, runner=RecordingRunner(), purge=True, confirm=lambda m: True
+    ) == 0
+    assert not paths.clone_dir("pokemon").exists()
+    assert not paths.env_file("pokemon").exists()
 
 
 def test_tail_journal_passes_quiet_flag(monkeypatch):

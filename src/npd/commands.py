@@ -134,6 +134,14 @@ def _report_changes(name: str, changes: list[Change]) -> None:
     """What is about to be written. Printed BEFORE applying, so that if
     applying fails the operator can see what was being attempted.
 
+    The heading verb is chosen from the change set itself rather than
+    hardcoded, so a caller whose changes are all removals (remove()) does
+    not print "writing config" over a list of deletions: all removals ->
+    "removing", all additions/modifications -> "writing", a mix ->
+    "updating". Never called with an empty list by remove() (it reports its
+    own "nothing to remove" instead), but install/update still hit the
+    empty case here, where "config unchanged" is the right word for them.
+
     Listed in ARTIFACT_KINDS order (unit, then nginx) rather than the path
     order plan_changes returns them in -- plan_changes sorts by path for its
     own (unrelated) reasons, and on the real filesystem that happens to put
@@ -141,7 +149,14 @@ def _report_changes(name: str, changes: list[Change]) -> None:
     if not changes:
         print(f"{name}: config unchanged", flush=True)
         return
-    print(f"{name}: writing config", flush=True)
+    removals = [c for c in changes if c.is_removal]
+    if len(removals) == len(changes):
+        verb = "removing"
+    elif not removals:
+        verb = "writing"
+    else:
+        verb = "updating"
+    print(f"{name}: {verb} config", flush=True)
     by_kind = {kind: i for i, kind in enumerate(ARTIFACT_KINDS)}
     for change in sorted(changes, key=lambda c: by_kind[c.kind]):
         print(f"  {_change_symbol(change)} {change.path}", flush=True)
@@ -527,6 +542,19 @@ def remove(
         print(f"{name}: nothing to remove", file=sys.stderr)
         return 1
 
+    # The generated config is already gone (a previous non-purge remove, or
+    # someone deleted it by hand) but the clone and/or env file are still
+    # here. Without --purge there is nothing left for this call to do, and
+    # silently printing "removed" (nothing was) would be a lie -- point at
+    # --purge instead, since that is exactly what is left to clean up.
+    if not owned and not purge:
+        print(
+            f"{name}: nothing to remove — generated config is already gone "
+            "(use --purge to also delete the clone and secrets)",
+            file=sys.stderr,
+        )
+        return 1
+
     if unit.exists():
         runner.run(["sudo", SYSTEMCTL, "stop", name], check=False)
         runner.run(["sudo", SYSTEMCTL, "disable", name], check=False)
@@ -543,10 +571,15 @@ def remove(
                 "stop it by hand before removing"
             )
 
-    changes = plan_changes((), remove=owned)
-    _report_changes(name, changes)
-    actions = apply_changes(changes, runner=runner)
-    _report_actions(name, actions)
+    # Only when there's actually something to remove -- purge with no
+    # generated config left (owned == []) has nothing for plan_changes to
+    # do, and _report_changes must never print "config unchanged" here:
+    # that phrase belongs to install/update, not remove.
+    if owned:
+        changes = plan_changes((), remove=owned)
+        _report_changes(name, changes)
+        actions = apply_changes(changes, runner=runner)
+        _report_actions(name, actions)
 
     if purge:
         # published_paths, not a hardcoded pair: a static app also leaves
