@@ -513,6 +513,11 @@ steps 3 and 5.
    Commit and push.
 2. `mv ~/pokemon ~/apps/pokemon` — **move, do not re-clone**, because app data
    currently lives inside the clone.
+   **Then delete any virtualenv inside it** (`rm -rf ~/apps/<app>/server/.venv`)
+   and rebuild with `uv sync`. Virtualenvs bake absolute paths into their
+   scripts' shebangs, so a moved one fails with a misleading
+   `Failed to spawn: uvicorn — No such file or directory`. Found migrating
+   pokemon; applies to every uv-managed service.
 3. Remove the app's `location` blocks from
    `/etc/nginx/sites-available/natpat.net`.
 4. `sudo systemctl stop <app> && sudo systemctl disable <app>` and remove

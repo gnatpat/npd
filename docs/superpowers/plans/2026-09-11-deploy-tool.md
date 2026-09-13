@@ -3656,11 +3656,22 @@ On the server:
 
 ```bash
 mv ~/pokemon ~/apps/pokemon     # move, do NOT re-clone: collection.db lives inside
+rm -rf ~/apps/pokemon/server/.venv   # a moved venv is broken — see below
 cd ~/apps/pokemon && git pull
 npd diff pokemon
 ```
 
 Expected: a diff creating `/etc/npd/systemd/pokemon.service` and `/etc/nginx/npd.d/pokemon.conf`. Read the `proxy_pass` line and confirm it matches the live one in `sites-available/natpat.net` exactly, trailing slash included.
+
+> **Found during the real migration, 2026-09-13:** Python virtualenvs are not
+> relocatable. Every script in `.venv/bin/` starts with an absolute shebang like
+> `#!/home/nathan/pokemon/server/.venv/bin/python`, so after the move the
+> interpreter it names no longer exists. `uv run uvicorn` then fails with
+> `Failed to spawn: uvicorn — No such file or directory (os error 2)`, which is
+> misleading because `uvicorn` is right there; it is the *interpreter* that is
+> missing. The venv is fully derived from `pyproject.toml` and `uv.lock`, so
+> delete it after moving and rebuild with `uv sync`. **This applies to every
+> uv-managed service you migrate — crochet and blog included.**
 
 - [ ] **Step 7: Cut over**
 
