@@ -100,6 +100,7 @@ class ServiceConfig:
     workdir: str = ""
     health_path: str | None = None
     port: int | None = None
+    sandbox: bool = False
 
 
 @dataclass(frozen=True)
@@ -241,11 +242,17 @@ def _parse_service(raw: dict[str, Any] | None) -> ServiceConfig:
             raise ConfigError(
                 f"service.port {port} is above the maximum valid port {MAX_PORT}"
             )
+    sandbox = raw.get("sandbox", False)
+    if not isinstance(sandbox, bool):
+        raise ConfigError(
+            f"service.sandbox must be true or false, got {type(sandbox).__name__}"
+        )
     return ServiceConfig(
         start=start,
         workdir=str(raw.get("workdir", "")),
         health_path=raw.get("health_path"),
         port=port,
+        sandbox=sandbox,
     )
 
 

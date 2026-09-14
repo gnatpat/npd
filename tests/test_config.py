@@ -470,3 +470,14 @@ def test_dev_start_as_non_string_is_rejected():
             '[service]\nstart = "run"\n[dev]\nstart = true\n',
             repo_name="x",
         )
+
+
+def test_sandbox_defaults_to_off():
+    c = parse_config('[service]\nstart = "run"\n', repo_name="x")
+    assert c.service.sandbox is False
+
+
+def test_sandbox_must_be_a_boolean():
+    # A security switch must not treat a typo like "yes" as a silent default.
+    with pytest.raises(ConfigError, match="service.sandbox"):
+        parse_config('[service]\nstart = "run"\nsandbox = "yes"\n', repo_name="x")

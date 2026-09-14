@@ -30,6 +30,15 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
 - **Detect a relocated virtualenv.** Moving a clone breaks `.venv` (absolute
   shebangs) with a confusing `Failed to spawn: uvicorn`. Detect a venv whose
   paths don't match the clone and tell the user to `rm -rf .venv` (or do it).
+- **Make `sandbox = true` work for uv apps.** The sandbox hides `/home`, and
+  uv lives there: the binary (`~/.local/bin/uv`), its managed Pythons
+  (`~/.local/share/uv/python`) and its cache (`~/.cache/uv`). Options to weigh:
+  bind those read-only into the sandbox (the cache needs write access, or
+  `UV_NO_CACHE`/a cache inside the clone); run `.venv/bin/<cmd>` directly
+  instead of `uv run` so only the venv and its Python are needed; or install
+  uv and Pythons system-wide (`/usr/local`, `UV_PYTHON_INSTALL_DIR`) so there
+  is nothing in `/home` to expose. Check what each app writes besides its
+  clone (pokemon's `collection.db` is in the clone, so that part is fine).
 - **A command to change a secret.** Rotating one today means hand-editing
   `/etc/npd/env/<app>.env` and restarting; something like
   `npd secret set <app> <NAME>` could prompt, write 0600, and restart.

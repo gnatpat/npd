@@ -182,3 +182,35 @@ def test_render_forwards_commit_into_the_unit():
     artifacts = render(parse_config(POKEMON, repo_name="pokemon"), 8151, PATHS, "b" * 40)
     (unit_artifact,) = [a for a in artifacts if a.kind is SYSTEMD_UNIT]
     assert f'NPD_COMMIT={"b" * 40}' in unit_artifact.contents
+
+
+SANDBOXED = POKEMON.replace('[service]\n', '[service]\nsandbox = true\n')
+
+
+def test_an_unsandboxed_unit_has_no_sandbox_lines():
+    assert "ProtectHome" not in unit()
+
+
+def test_a_sandboxed_unit_hides_home_except_the_whole_clone():
+    out = unit(SANDBOXED)
+    assert "ProtectHome=tmpfs\n" in out
+    # The clone, not the service workdir: apps keep data anywhere in their clone.
+    assert "BindPaths=/srv/test/apps/pokemon\n" in out
+
+
+def test_a_sandboxed_unit_cannot_read_any_apps_secrets():
+    # "-" so a box that has never stored a secret (no env dir) still starts.
+    assert "InaccessiblePaths=-/srv/test/etc/npd/env\n" in unit(SANDBOXED)
+
+
+def test_a_sandboxed_unit_is_read_only_elsewhere_and_resource_capped():
+    out = unit(SANDBOXED)
+    for line in (
+        "ProtectSystem=strict",
+        "PrivateTmp=yes",
+        "NoNewPrivileges=yes",
+        "MemoryMax=200M",
+        "TasksMax=100",
+        "CPUQuota=50%",
+    ):
+        assert f"{line}\n" in out

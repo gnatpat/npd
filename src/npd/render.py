@@ -92,9 +92,28 @@ _UNIT_TEMPLATE = (
     "ExecStart=/bin/bash -c 'exec {start}'\n"
     "Restart=always\n"
     "RestartSec=1\n"
+    "{sandbox_block}"
     "\n"
     "[Install]\n"
     "WantedBy=multi-user.target\n"
+)
+
+
+# Opt-in (service.sandbox). The app sees an empty /home apart from its own
+# clone, cannot read any app's env file, cannot write outside its clone, and
+# cannot take the whole box down with it. Fixed on purpose: npd adds these
+# lines, it does not model systemd's sandboxing options. systemd reads
+# EnvironmentFile= before applying any of this, so secrets still arrive.
+_SANDBOX_TEMPLATE = (
+    "ProtectHome=tmpfs\n"
+    "BindPaths={clone}\n"
+    "InaccessiblePaths=-{env_dir}\n"
+    "ProtectSystem=strict\n"
+    "PrivateTmp=yes\n"
+    "NoNewPrivileges=yes\n"
+    "MemoryMax=200M\n"
+    "TasksMax=100\n"
+    "CPUQuota=50%\n"
 )
 
 
@@ -129,6 +148,14 @@ def render_systemd_unit(
     )
     var_block = env_lines + env_file_line
 
+    sandbox_block = (
+        _SANDBOX_TEMPLATE.format(
+            clone=paths.clone_dir(config.name), env_dir=paths.env
+        )
+        if config.service.sandbox
+        else ""
+    )
+
     start = _escape_unit_percent(config.service.start)
     return _UNIT_TEMPLATE.format(
         header=MANAGED_HEADER,
@@ -138,6 +165,7 @@ def render_systemd_unit(
         unit_path=settings.UNIT_PATH,
         port=port,
         commit_line=commit_line,
+        sandbox_block=sandbox_block,
         var_block=var_block,
         start=start,
     )

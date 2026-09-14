@@ -116,6 +116,7 @@ workdir = "server"          # where the start command runs, relative to the repo
 start = "uv run uvicorn main:app --host 127.0.0.1 --port $PORT"
 health_path = "/"           # optional; must return 2xx after a restart
 port = 8151                 # optional; pin a port instead of being assigned one
+sandbox = false             # optional; see "Sandboxing" below
 
 [nginx]                     # omit for a service with no public route
 path = "/pokemon/"
@@ -165,6 +166,18 @@ edit a file on the server.
 
 Locally, `npd dev` reads the same names from a gitignored `.env` in the repo
 root and tells you which are missing before it starts anything.
+
+### Sandboxing
+
+`sandbox = true` adds a fixed set of systemd hardening lines to the unit. The
+app sees an empty `/home` apart from its own clone (which stays writable),
+cannot read any app's env file (its own secrets still arrive, because systemd
+reads `EnvironmentFile=` first), cannot write anywhere else, cannot gain
+privileges, and is capped at 200 MB of memory, 100 processes and half a CPU.
+
+It is meant for small, untrusted-feeling code. Apps whose toolchain lives in
+your home directory — `uv run`, nvm's `node` — will not start with it on,
+because the sandbox hides that too.
 
 ### Static apps
 
