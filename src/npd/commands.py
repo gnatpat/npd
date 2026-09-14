@@ -24,7 +24,7 @@ from npd.reconcile import (
 from npd.render import render
 from npd.runner import Runner
 from npd.secrets import merge_secrets, missing_secrets, read_env_file
-from npd.static import publish, published_paths
+from npd.static import publish, published_commit, published_paths
 
 SYSTEMCTL = settings.SYSTEMCTL
 Prompt = Callable[[str, str], str]
@@ -178,6 +178,10 @@ def _waiting_message(name: str, port: int, health_path: str | None) -> str:
     return f"{name}: waiting for port {port} to accept connections …"
 
 
+# A static build directory is named <app>-<first 12 hex of the commit>.
+_PUBLISHED_COMMIT_LENGTH = 12
+
+
 def _deploy(
     config: AppConfig,
     repo: Path,
@@ -208,7 +212,7 @@ def _deploy(
         publish(
             repo / config.build.output,
             name=config.name,
-            commit=commit[:12],
+            commit=commit[:_PUBLISHED_COMMIT_LENGTH],
             paths=paths,
         )
 
@@ -370,7 +374,14 @@ def update(name: str, *, paths: Paths, runner: Runner, prompt: Prompt) -> int:
         # when moved or needs_secret is already true a deploy is happening
         # regardless, and _deploy computes its own commit for that.
         commit = head_commit(repo, runner=runner)
-        if not plan_app_changes(config.name, render(config, port, paths, commit), paths):
+        # A static app's rendered config carries no commit, so the same
+        # question is answered by the live symlink instead.
+        stale_publish = config.is_static and published_commit(
+            config.name, paths
+        ) != commit[:_PUBLISHED_COMMIT_LENGTH]
+        if not stale_publish and not plan_app_changes(
+            config.name, render(config, port, paths, commit), paths
+        ):
             print(f"{name}: already up to date")
             return 0
 
@@ -394,6 +405,7 @@ def status_of(
     port = ports_in_use(paths).get(name)
     route = None
     error = None
+    is_static = False
     config_file = paths.clone_dir(name) / "npd.toml"
     if config_file.exists():
         # A broken npd.toml must not take down the whole `list` command —
@@ -406,21 +418,33 @@ def status_of(
             error = str(exc)
         else:
             route = config.nginx.path if config.nginx else None
+            is_static = config.is_static
 
+    # A static app has no process to ask systemd about: whether it is up is
+    # whether its live symlink exists, and the commit worth reporting is the
+    # one that link serves rather than whatever the clone has checked out.
+    live_commit = published_commit(name, paths)
     active = "unknown"
     if port is not None:
         result = runner.run(
             ["sudo", SYSTEMCTL, "is-active", name], check=False
         )
         active = (result.stdout or "").strip() or "unknown"
+    elif live_commit is not None:
+        active = "published"
+    elif is_static:
+        active = "not published"
 
     commit = ""
     behind = None
     repo = paths.clone_dir(name)
-    if (repo / ".git").exists():
+    has_clone = (repo / ".git").exists()
+    if live_commit is not None:
+        commit = live_commit[:8]
+    elif has_clone:
         commit = head_commit(repo, runner=runner)[:8]
-        if fetch:
-            behind = _commits_behind(repo, runner=runner)
+    if has_clone and fetch:
+        behind = _commits_behind(repo, runner=runner)
 
     return AppStatus(
         name=name,
@@ -585,8 +609,8 @@ def remove(
         # published_paths, not a hardcoded pair: a static app also leaves
         # its live symlink and versioned build directories under
         # paths.static, and those are just as much "this app's data" as the
-        # clone and env file -- left out, --purge would silently leave them
-        # behind forever (there is no other GC for them). published_paths
+        # clone and env file -- left out, --purge would silently leave the
+        # live build and its rollback copy behind forever. published_paths
         # only ever matches this exact name or a "<name>-" prefix, so a
         # differently-named app's files are never at risk.
         targets = [clone, env_file] + published_paths(name, paths)

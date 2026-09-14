@@ -36,6 +36,7 @@ def publish(source: Path, *, name: str, commit: str, paths: Paths) -> Path:
         )
 
     paths.static.mkdir(parents=True, exist_ok=True)
+    previous = live_target(name, paths)
     target = paths.static / f"{name}-{commit}"
     if target.exists():
         shutil.rmtree(target)
@@ -48,6 +49,15 @@ def publish(source: Path, *, name: str, commit: str, paths: Paths) -> Path:
         tmp_link.unlink()
     tmp_link.symlink_to(target.name)
     os.replace(tmp_link, paths.static / name)
+
+    # Keep the new build and the one it replaced (to roll back to by hand);
+    # nothing else would ever delete the rest. Republishing the live commit
+    # replaced nothing, so it prunes nothing: the older build is still the
+    # rollback target.
+    if previous != target:
+        for old in published_paths(name, paths):
+            if old != live_path and old not in (target, previous):
+                shutil.rmtree(old)
     return target
 
 
@@ -82,3 +92,11 @@ def published_paths(name: str, paths: Paths) -> list[Path]:
         if p.is_dir() and not p.is_symlink() and build_dir.match(p.name)
     )
     return owned
+
+
+def published_commit(name: str, paths: Paths) -> str | None:
+    """The (truncated) commit the live symlink serves, if any."""
+    target = live_target(name, paths)
+    if target is None:
+        return None
+    return target.name.removeprefix(f"{name}-")

@@ -10,7 +10,8 @@ a place to keep secrets. Installing an app is one command. So is updating it.
 ```console
 $ npd install pokemon
 $ npd list
-pokemon      8201   /pokemon/      active     a3f91c2
+boggle       -      /boggle/       published     3abb3c25
+pokemon      8201   /pokemon/      active        a3f91c2
 $ npd update pokemon
 pokemon: already up to date
 ```
@@ -182,7 +183,9 @@ path = "/boggle/"
 
 No process, no port, no unit. Builds are published to
 `/var/www/npd/<name>-<commit>` and the live symlink is swapped atomically, so
-a rebuild never serves a half-copied tree and the previous build stays on disk.
+a rebuild never serves a half-copied tree. The build it replaced stays on disk
+(older ones are deleted), and `npd list` shows a static app as `published` with
+the commit actually being served.
 
 ## Commands
 

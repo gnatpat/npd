@@ -133,7 +133,7 @@ def _run(argv: list[str] | None = None) -> int:
             behind = "" if app.behind in (None, 0) else f"  ({app.behind} behind)"
             line = (
                 f"{app.name:<12} {str(port):<6} {app.route or '-':<14} "
-                f"{app.active:<10} {app.commit}{behind}"
+                f"{app.active:<13} {app.commit}{behind}"
             )
             if app.error:
                 line += f"  [error: {app.error}]"

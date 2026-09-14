@@ -1,7 +1,7 @@
 import pytest
 
 from npd.paths import Paths
-from npd.static import live_target, publish, published_paths
+from npd.static import live_target, publish, published_commit, published_paths
 
 
 def build(tmp_path, content: str):
@@ -120,3 +120,40 @@ def test_non_hex_commit_is_rejected_before_touching_the_filesystem(tmp_path):
             paths=paths,
         )
     assert not paths.static.exists()
+
+
+def test_publishing_prunes_builds_older_than_the_previous_one(tmp_path):
+    paths = Paths.under(tmp_path)
+    for commit in ("aaa", "bbb", "ccc"):
+        publish(build(tmp_path, commit), name="boggle", commit=commit, paths=paths)
+    assert not (paths.static / "boggle-aaa").exists()
+    assert (paths.static / "boggle-bbb" / "index.html").read_text() == "bbb"
+    assert (paths.static / "boggle" / "index.html").read_text() == "ccc"
+
+
+def test_republishing_the_live_commit_keeps_the_previous_build(tmp_path):
+    paths = Paths.under(tmp_path)
+    for commit in ("aaa", "bbb", "bbb"):
+        publish(build(tmp_path, commit), name="boggle", commit=commit, paths=paths)
+    assert (paths.static / "boggle-aaa").is_dir()
+
+
+def test_pruning_leaves_a_sibling_apps_builds_alone(tmp_path):
+    # "boggle-add" is itself valid hex after "boggle-", so this is the name
+    # most likely to be mistaken for one of boggle's own builds.
+    paths = Paths.under(tmp_path)
+    publish(build(tmp_path, "sib"), name="boggle-add", commit="aaa", paths=paths)
+    for commit in ("bbb", "ccc", "ddd"):
+        publish(build(tmp_path, commit), name="boggle", commit=commit, paths=paths)
+    assert (paths.static / "boggle-add-aaa").is_dir()
+    assert (paths.static / "boggle-add" / "index.html").read_text() == "sib"
+
+
+def test_published_commit_is_read_from_the_live_link(tmp_path):
+    paths = Paths.under(tmp_path)
+    publish(build(tmp_path, "v1"), name="boggle", commit="abc123", paths=paths)
+    assert published_commit("boggle", paths) == "abc123"
+
+
+def test_published_commit_is_none_when_nothing_is_published(tmp_path):
+    assert published_commit("boggle", Paths.under(tmp_path)) is None

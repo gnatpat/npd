@@ -5,12 +5,6 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
 
 ## Bugs
 
-- **`npd list` shows `unknown` for static apps.** `status_of` only asks
-  systemd when the app has a port, so a static app always reports `unknown`.
-  It should report whether the live symlink exists (e.g. `published` /
-  `not published`), and the commit column should be the *published* commit
-  (from `live_target`), not the clone's HEAD — those differ after a failed
-  or not-yet-run update.
 - **Unknown keys in `npd.toml` are silently ignored.** Writing `name` and
   `type` at the top level instead of under `[app]` parsed as a *service* app
   and failed with the misleading "a service app requires a [service]
@@ -19,6 +13,10 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
 - **`npd dev --prefix` is ignored for static apps.** It serves the output
   directory at `/` regardless. Either route it through the prefix proxy like
   services, or refuse the flag.
+- **Republishing the live commit briefly 404s.** `publish` `rmtree`s
+  `<name>-<commit>` before copying, but when that commit is already live the
+  symlink points straight at the directory being deleted. Copy to a temp
+  directory and swap instead.
 - **`npd diff` on an installed service always shows the `NPD_COMMIT` line as
   a pending removal**, because diff deliberately runs no git. Known and
   documented in `commands.diff`, but noisy; could read the stamped commit
@@ -26,9 +24,6 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
 
 ## Improvements
 
-- **Prune old static builds.** `publish` keeps every `/var/www/npd/<name>-<commit>`
-  forever (boggle is ~6.5 MB per deploy). Keep the live one plus the previous
-  one for rollback; delete the rest.
 - **Detect a relocated virtualenv.** Moving a clone breaks `.venv` (absolute
   shebangs) with a confusing `Failed to spawn: uvicorn`. Detect a venv whose
   paths don't match the clone and tell the user to `rm -rf .venv` (or do it).
@@ -52,9 +47,14 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
 - **Pokemon: remove the hardcoded `COLLECTION_PASSWORD` fallback** in
   `server/main.py` (and rotate the password — it was exposed).
 - **Blog: consider moving the route to `/blog/`** to match the other apps.
-- **The main site generator (`gnatpat/site`)** isn't an npd fit today: it
-  serves `/` (which npd refuses), rebuilds non-atomically by `rmtree`-ing
-  `/public_html/www`, and depends on 68 MB of Unity games in `/resources`
-  that aren't in git. Deploys via GitHub Actions → push to `/site.git` →
-  `post-receive` → `deploy.sh`.
+- **Move the main site generator (`gnatpat/site`) onto npd.** Today it deploys
+  via GitHub Actions → push to `/site.git` → `post-receive` → `deploy.sh`, and
+  rebuilds non-atomically by `rmtree`-ing `/public_html/www`. Needed:
+  - npd: allow one static app at `nginx.path = "/"` (currently refused), then
+    delete the hand-written `location /` (and `@manual`) from
+    `sites-available/natpat.net`. `error_page 404 /404/` can stay.
+  - site: get the 68 MB of Unity games (`/resources/unity-games`) and `/static`
+    (swfs, favicon) into the repo, or accept them as hand-managed inputs.
+  - site: replace `requirements.txt` + `/env` with
+    `uv run --with jinja2 --with pyyaml python site.py`.
 - **Delete the `build-deploy-tool` branch.**

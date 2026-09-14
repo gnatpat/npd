@@ -4,9 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from npd.commands import install, update
+from npd.commands import install, status_of, update
 from npd.paths import MANAGED_HEADER, Paths
 from npd.runner import RecordingRunner
+from npd.static import published_commit
 
 POKEMON_TOML = """
 [app]
@@ -161,6 +162,44 @@ def test_install_of_a_static_app_publishes_and_writes_no_unit(tmp_path):
     assert (paths.static / "boggle-abc123def456").is_dir()
     assert not paths.systemd_unit_file("boggle").exists()
     assert (paths.static / "boggle" / "index.html").read_text() == "hello"
+
+
+def test_status_of_a_static_app_reports_published_and_the_live_commit(tmp_path):
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "boggle", STATIC_TOML, static=True)
+    runner = RecordingRunner(stdout={"rev-parse": "abc123def4567890\n"})
+    install("boggle", paths=paths, runner=runner, prompt=answer())
+    # The clone has since moved on without a successful publish: the status
+    # must describe what is being served, not what is checked out.
+    later = RecordingRunner(stdout={"rev-parse": "fff0000000000000\n"})
+    status = status_of("boggle", paths=paths, runner=later)
+    assert (status.active, status.commit) == ("published", "abc123de")
+
+
+def test_status_of_a_static_app_with_no_live_build_says_so(tmp_path):
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "boggle", STATIC_TOML, static=True)
+    runner = RecordingRunner(stdout={"rev-parse": "abc123def4567890\n"})
+    install("boggle", paths=paths, runner=runner, prompt=answer())
+    (paths.static / "boggle").unlink()
+    assert status_of("boggle", paths=paths, runner=runner).active == "not published"
+
+
+def test_update_republishes_a_static_app_whose_last_build_never_went_live(
+    tmp_path, capsys
+):
+    # A previous update pulled bbbb... but its build failed, so the clone is
+    # at bbbb... while aaaa... is still live. Nothing new to pull and an
+    # unchanged nginx snippet must not read as "already up to date".
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "boggle", STATIC_TOML, static=True)
+    first = RecordingRunner(stdout={"rev-parse": "aaaaaaaaaaaaaaaa\n"})
+    install("boggle", paths=paths, runner=first, prompt=answer())
+    capsys.readouterr()
+    retry = RecordingRunner(stdout={"rev-parse": "bbbbbbbbbbbbbbbb\n"})
+    assert update("boggle", paths=paths, runner=retry, prompt=answer()) == 0
+    assert "already up to date" not in capsys.readouterr().out
+    assert published_commit("boggle", paths) == "bbbbbbbbbbbb"
 
 
 def test_a_failed_build_aborts_before_writing_anything(tmp_path):
