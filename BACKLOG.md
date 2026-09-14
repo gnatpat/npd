@@ -17,6 +17,9 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
   `<name>-<commit>` before copying, but when that commit is already live the
   symlink points straight at the directory being deleted. Copy to a temp
   directory and swap instead.
+- **`npd dev` crashes when `.env` is a directory** (`IsADirectoryError`), which
+  it is in any repo with an old virtualenv named `.env` (e.g. shogi). Treat a
+  non-file `.env` as absent.
 - **`npd diff` on an installed service always shows the `NPD_COMMIT` line as
   a pending removal**, because diff deliberately runs no git. Known and
   documented in `commands.diff`, but noisy; could read the stamped commit
@@ -60,4 +63,7 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
     (swfs, favicon) into the repo, or accept them as hand-managed inputs.
   - site: replace `requirements.txt` + `/env` with
     `uv run --with jinja2 --with pyyaml python site.py`.
+- **Upgrade the droplet off Ubuntu 20.04** (standard support ended April 2025).
+  Shogi runs on `python2.7`, which newer releases drop, so port it to Python 3
+  as part of that (it has tests: `shogi_test.py`, `shogi_server_test.py`).
 - **Delete the `build-deploy-tool` branch.**
