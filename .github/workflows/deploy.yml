@@ -1,0 +1,62 @@
+# Reusable workflow: redeploy one npd app after a push to its default branch.
+# Called from each app's repository; see "Deploy on push" in the README.
+#
+# Nothing from the repository is sent to the server. The server's deploy key
+# is locked to `npd-deploy`, which only runs `npd update <app>`, and that
+# pulls the app from GitHub itself.
+name: npd deploy
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: The npd app name to update.
+        required: true
+        type: string
+      server:
+        description: SSH destination, e.g. nathan@example.com.
+        required: true
+        type: string
+      host_key:
+        description: >-
+          The server's host key as a known_hosts line, e.g.
+          "example.com ssh-ed25519 AAAA...". Pinned so the deploy never
+          trusts whichever host answers.
+        required: true
+        type: string
+    secrets:
+      NPD_DEPLOY_KEY:
+        description: Private half of the key locked to npd-deploy on the server.
+        required: true
+
+jobs:
+  deploy:
+    # The github context is the caller's. Only its default branch deploys,
+    # matching the branch npd's clone tracks.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions: {}
+    # Queue, never cancel: a half-finished deploy is worse than a late one.
+    concurrency:
+      group: npd-deploy-${{ inputs.app }}
+      cancel-in-progress: false
+    steps:
+      - name: npd update ${{ inputs.app }}
+        env:
+          APP: ${{ inputs.app }}
+          SERVER: ${{ inputs.server }}
+          HOST_KEY: ${{ inputs.host_key }}
+          DEPLOY_KEY: ${{ secrets.NPD_DEPLOY_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$HOST_KEY" > "$RUNNER_TEMP/known_hosts"
+          ssh -i "$RUNNER_TEMP/deploy_key" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+            "$SERVER" "$APP"

@@ -103,6 +103,10 @@ class Paths:
     def nginx_snippet_file(self, name: str) -> Path:
         return NGINX_SNIPPET.file(self, name)
 
+    @property
+    def lock_file(self) -> Path:
+        return self.apps / ".npd.lock"
+
     def env_file(self, name: str) -> Path:
         return self.env / f"{name}.env"
 

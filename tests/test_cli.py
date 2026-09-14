@@ -334,3 +334,15 @@ def test_update_all_with_no_installed_apps_succeeds(tmp_path):
     from npd.cli import main
 
     assert main(["--root", str(tmp_path), "update", "--all"]) == 0
+
+
+def test_a_secret_prompt_with_no_terminal_fails_cleanly(monkeypatch):
+    # A deploy from CI has no terminal. getpass would fall back to reading an
+    # empty stdin and crash with EOFError, a traceback rather than a message.
+    import io
+
+    from npd.cli import _prompt
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    with pytest.raises(ValueError, match="COLLECTION_PASSWORD.*no terminal"):
+        _prompt("COLLECTION_PASSWORD", "password for the collection")

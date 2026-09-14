@@ -37,6 +37,9 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
 - **A command to change a secret.** Rotating one today means hand-editing
   `/etc/npd/env/<app>.env` and restarting; something like
   `npd secret set <app> <NAME>` could prompt, write 0600, and restart.
+- **Automate per-app deploy setup** once it has been done by hand a few times:
+  something that writes `.github/workflows/deploy.yml` and runs
+  `gh secret set NPD_DEPLOY_KEY`, so a new repo is one command.
 - **`[dev.env]` overrides.** Blog's dev start is
   `env INSTANCE_PATH=$PWD/instance uv run flask ...` only because `[env]`
   can't differ between production and dev.
@@ -45,6 +48,12 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
 
 ## Around the box (not npd code)
 
+- **`site`'s GitHub Action holds an unrestricted SSH key** (probably the
+  unlabelled one in `authorized_keys`), and its push hook runs `site.py`, so
+  that secret is effectively root. Remove the key once `site` deploys through
+  npd; until then consider deleting it and deploying `site` by hand. Also check
+  whether the `DESKTOP-HJOM6N9` and `bethany@Nathans-MacBook-Pro.local` keys
+  are still needed.
 - **Blog: consider moving the route to `/blog/`** to match the other apps.
 - **Move the main site generator (`gnatpat/site`) onto npd.** Today it deploys
   via GitHub Actions → push to `/site.git` → `post-receive` → `deploy.sh`, and

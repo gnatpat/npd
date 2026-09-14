@@ -98,6 +98,10 @@ Then, once per server:
    These are the only things `npd` uses `sudo` for. Everything else — git,
    builds, writing config — runs as you.
 
+   Be aware that passwordless `systemctl` is as good as root: anyone with a
+   shell as this user can start any command as root through a unit. Never hand
+   an unrestricted SSH key for this user to CI; see [Deploy on push](#deploy-on-push).
+
 ## `npd.toml`
 
 One file at the root of each repository you deploy.
@@ -232,6 +236,68 @@ prefix stripping, the same forwarded headers — so those bugs surface on your
 laptop instead. The proxy and the nginx renderer are driven by the same
 config, so they cannot disagree.
 
+## Deploy on push
+
+A push to an app's default branch can run `npd update <app>` on the server
+from GitHub Actions, without giving GitHub a shell:
+
+- One SSH key on the server is **locked to `npd-deploy`** (installed alongside
+  `npd`). Whatever a client asks for, that key runs `npd-deploy`, which accepts
+  a single app name and runs `npd update` on it. It cannot open a shell, run
+  anything else, or pass options.
+- **Nothing is sent from GitHub** but that name. `npd update` pulls from the
+  app's own remote, so a leaked key can only redeploy what is already pushed.
+- **The server's host key is pinned** in the workflow instead of trusting
+  whatever answers.
+- A failed deploy (build, health check, nginx rollback) exits non-zero, so it
+  shows up as a failed run with `npd`'s output in the log. Deploys queue, and
+  never run at the same time as each other or as an `npd` command you are
+  running by hand.
+
+### Once per server
+
+On your laptop, make the key and read the server's host key:
+
+```console
+$ ssh-keygen -t ed25519 -N "" -C npd-deploy -f ~/.ssh/npd_deploy
+$ ssh <server> cat /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+On the server, add one line to `~/.ssh/authorized_keys` — the public key from
+`~/.ssh/npd_deploy.pub`, prefixed with the lock:
+
+```
+command="/home/<user>/.local/bin/npd-deploy",restrict ssh-ed25519 AAAA… npd-deploy
+```
+
+### Once per app
+
+Add `.github/workflows/deploy.yml` to the app's repository:
+
+```yaml
+name: deploy
+on: [push, workflow_dispatch]
+jobs:
+  deploy:
+    uses: gnatpat/npd/.github/workflows/deploy.yml@main
+    with:
+      app: crochet
+      server: <user>@example.com
+      host_key: example.com ssh-ed25519 AAAA…   # hostname + the host key from above
+    secrets: inherit
+```
+
+and give it the private key:
+
+```console
+$ gh secret set NPD_DEPLOY_KEY -R <you>/<repo> < ~/.ssh/npd_deploy
+```
+
+Pushes to other branches show up as skipped runs. `workflow_dispatch` adds a
+"Run workflow" button for redeploying by hand. A push that declares a new
+`[secrets]` entry fails with a message asking you to run `npd update <app>` by
+hand once, since there is nobody to type it in.
+
 ## When things go wrong
 
 `npd` is built around the idea that a deploy either happens or does not:
@@ -244,6 +310,8 @@ config, so they cannot disagree.
   keeps serving, and `npd` tells you the working tree is now ahead of what is
   running. The next `npd update` notices and redeploys — it will not tell you
   everything is fine when it is not.
+- **Two commands never interleave.** `install`, `update` and `remove` take a
+  lock; a second one prints that it is waiting and runs when the first is done.
 - **A failed health check** leaves the service running, prints the last lines
   of its journal, and exits non-zero.
 - **Files you wrote yourself are never overwritten.** Every generated file

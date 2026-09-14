@@ -8,6 +8,7 @@ from npd import commands
 from npd.config import ConfigError, parse_config
 from npd.dev import DEFAULT_DEV_PORT, run_dev
 from npd.gitrepo import DirtyRepo
+from npd.lock import exclusive
 from npd.paths import Paths, app_name_error
 from npd.reconcile import ApplyFailed, ForeignFile
 from npd.runner import RealRunner
@@ -69,6 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _prompt(name: str, description: str) -> str:
+    if not sys.stdin.isatty():
+        # e.g. a deploy triggered from CI: there is nobody to type it.
+        raise ValueError(
+            f"{name} ({description}) has no value yet and there is no terminal "
+            "to ask for it; run the same npd command by hand once to enter it"
+        )
     return getpass.getpass(f"{name} ({description}): ")
 
 
@@ -90,9 +97,20 @@ def _validated(name: str) -> str:
     return name
 
 
+# Commands that write config, build or restart; read-only ones never wait.
+_LOCKED_COMMANDS = ("install", "update", "remove")
+
+
 def _run(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     paths = Paths.under(args.root) if args.root else Paths.default()
+    if args.command in _LOCKED_COMMANDS:
+        with exclusive(paths.lock_file):
+            return _dispatch(args, paths)
+    return _dispatch(args, paths)
+
+
+def _dispatch(args: argparse.Namespace, paths: Paths) -> int:
     runner = RealRunner()
 
     if args.command == "install":
