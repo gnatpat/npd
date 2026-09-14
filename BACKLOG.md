@@ -5,11 +5,6 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
 
 ## Bugs
 
-- **Unknown keys in `npd.toml` are silently ignored.** Writing `name` and
-  `type` at the top level instead of under `[app]` parsed as a *service* app
-  and failed with the misleading "a service app requires a [service]
-  section". Reject unknown top-level tables/keys (and unknown keys inside
-  known tables) with a message naming the key.
 - **`npd dev --prefix` is ignored for static apps.** It serves the output
   directory at `/` regardless. Either route it through the prefix proxy like
   services, or refuse the flag.

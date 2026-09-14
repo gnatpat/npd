@@ -65,6 +65,40 @@ class ConfigError(Exception):
     """A npd.toml that cannot be used. The message is shown to the user."""
 
 
+# Every key npd reads, per table. None means the table's keys are the user's
+# own names ([env], [secrets]). Anything else is a typo or a misplaced key,
+# which would otherwise be silently ignored and surface, if at all, as a
+# misleading error about something else.
+_KNOWN_KEYS: dict[str, tuple[str, ...] | None] = {
+    "app": ("name", "type"),
+    "build": ("steps", "workdir", "output"),
+    "service": ("start", "workdir", "health_path", "port", "sandbox"),
+    "nginx": ("path", "strip_prefix", "client_max_body_size"),
+    "dev": ("start",),
+    "env": None,
+    "secrets": None,
+}
+
+
+def _check_known_keys(raw: dict[str, Any]) -> None:
+    for key in raw:
+        if key in _KNOWN_KEYS:
+            continue
+        homes = [t for t, keys in _KNOWN_KEYS.items() if keys and key in keys]
+        hint = f"; it belongs under {' or '.join(f'[{t}]' for t in homes)}" if homes else ""
+        raise ConfigError(f"unknown top-level key {key!r} in npd.toml{hint}")
+    for table, keys in _KNOWN_KEYS.items():
+        section = raw.get(table)
+        # A non-table here is reported by _table with a better message.
+        if keys is None or not isinstance(section, dict):
+            continue
+        for key in section:
+            if key not in keys:
+                raise ConfigError(
+                    f"unknown key {table}.{key}; [{table}] accepts {', '.join(keys)}"
+                )
+
+
 def _table(raw: dict[str, Any], key: str) -> dict[str, Any]:
     """Extract a table from the config, raising ConfigError if it's not a dict."""
     value = raw.get(key, {})
@@ -131,6 +165,7 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
         raw: dict[str, Any] = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"npd.toml is not valid TOML: {exc}") from exc
+    _check_known_keys(raw)
 
     app = _table(raw, "app")
     app_type = app.get("type", "service")

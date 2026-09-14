@@ -481,3 +481,51 @@ def test_sandbox_must_be_a_boolean():
     # A security switch must not treat a typo like "yes" as a silent default.
     with pytest.raises(ConfigError, match="service.sandbox"):
         parse_config('[service]\nstart = "run"\nsandbox = "yes"\n', repo_name="x")
+
+
+EVERY_SERVICE_KEY = """
+[app]
+name = "x"
+type = "service"
+[build]
+workdir = "frontend"
+steps = ["make"]
+output = "dist"
+[service]
+workdir = "server"
+start = "run"
+health_path = "/"
+port = 8151
+sandbox = true
+[nginx]
+path = "/x/"
+strip_prefix = false
+client_max_body_size = "10m"
+[dev]
+start = "run --reload"
+[env]
+ANYTHING_AT_ALL = "1"
+[secrets]
+ANY_SECRET_NAME = "what it is for"
+"""
+
+
+def test_every_documented_key_is_accepted():
+    parse_config(EVERY_SERVICE_KEY, repo_name="x")
+
+
+def test_a_top_level_key_that_belongs_in_a_table_says_which_table():
+    # The real mistake: name/type written above the tables instead of in [app].
+    toml = 'name = "boggle"\n' + STATIC_TOML.replace('name = "boggle"\n', "", 1)
+    with pytest.raises(ConfigError, match=r"'name'.*\[app\]"):
+        parse_config(toml, repo_name="boggle")
+
+
+def test_an_unknown_table_is_rejected():
+    with pytest.raises(ConfigError, match="servce"):
+        parse_config('[servce]\nstart = "run"\n', repo_name="x")
+
+
+def test_an_unknown_key_inside_a_table_is_rejected():
+    with pytest.raises(ConfigError, match=r"service\.healthpath"):
+        parse_config('[service]\nstart = "run"\nhealthpath = "/"\n', repo_name="x")

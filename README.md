@@ -134,7 +134,8 @@ API_TOKEN = "token for the upload endpoint"
 ```
 
 An absent section means "do not do that": no `[build]`, no build step; no
-`[nginx]`, no public route.
+`[nginx]`, no public route. Any key or table not shown above is an error, so a
+typo fails loudly instead of being ignored.
 
 `$PORT` is always present in the environment. `npd` assigns one from 8200–8299
 unless you pin it, reads it back out of the generated unit, and never hands
