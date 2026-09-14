@@ -50,17 +50,6 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
 
 ## Around the box (not npd code)
 
-- **Non-interactive ssh has no `npd` or `npm` on PATH.** `ssh natpat.net npd list`
-  → `command not found`: `~/.local/bin` is added in `~/.profile` (login
-  shells only) and nvm in `~/.bashrc` after the interactive guard. Workaround:
-  `ssh natpat.net 'bash -lic "npd list"'`. Fix by moving the PATH/nvm lines
-  above the guard in `~/.bashrc`.
-- **Decommission shogi** (`location /shogi/` in the natpat.net site config,
-  `~/shogi`) and the **wedding site** (`~/wedding`, `run-wedding.sh`,
-  `sites-enabled/bethany-nathan.wedding`), then `certbot delete` the dead
-  bethany-nathan.wedding certificate so renewals stop failing.
-- **Pokemon: remove the hardcoded `COLLECTION_PASSWORD` fallback** in
-  `server/main.py` (and rotate the password — it was exposed).
 - **Blog: consider moving the route to `/blog/`** to match the other apps.
 - **Move the main site generator (`gnatpat/site`) onto npd.** Today it deploys
   via GitHub Actions → push to `/site.git` → `post-receive` → `deploy.sh`, and
