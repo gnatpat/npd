@@ -27,6 +27,9 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
 - **Detect a relocated virtualenv.** Moving a clone breaks `.venv` (absolute
   shebangs) with a confusing `Failed to spawn: uvicorn`. Detect a venv whose
   paths don't match the clone and tell the user to `rm -rf .venv` (or do it).
+- **A command to change a secret.** Rotating one today means hand-editing
+  `/etc/npd/env/<app>.env` and restarting; something like
+  `npd secret set <app> <NAME>` could prompt, write 0600, and restart.
 - **`[dev.env]` overrides.** Blog's dev start is
   `env INSTANCE_PATH=$PWD/instance uv run flask ...` only because `[env]`
   can't differ between production and dev.
