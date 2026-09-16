@@ -61,6 +61,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name")
     p.add_argument("--purge", action="store_true", help="also delete clone and secrets")
 
+    p = sub.add_parser("secret", help="store a secret value for an app")
+    secret_sub = p.add_subparsers(dest="secret_command", required=True)
+    p = secret_sub.add_parser("set", help="prompt for one secret and store it")
+    p.add_argument("name")
+    p.add_argument("secret")
+    p.add_argument(
+        "--stdin",
+        action="store_true",
+        help="read the value from stdin instead of prompting (one trailing newline is removed)",
+    )
+
     p = sub.add_parser("dev", help="run this repo locally")
     p.add_argument("--prefix", action="store_true", help="serve under the nginx route")
     p.add_argument("--build", action="store_true", help="run build steps first")
@@ -98,7 +109,7 @@ def _validated(name: str) -> str:
 
 
 # Commands that write config, build or restart; read-only ones never wait.
-_LOCKED_COMMANDS = ("install", "update", "remove")
+_LOCKED_COMMANDS = ("install", "update", "remove", "secret")
 
 
 def _run(argv: list[str] | None = None) -> int:
@@ -144,6 +155,20 @@ def _dispatch(args: argparse.Namespace, paths: Paths) -> int:
                 print(f"error: {n}: {exc}", file=sys.stderr)
                 failed = True
         return 1 if failed else 0
+
+    if args.command == "secret":
+        _validated(args.name)
+        # A value piped in (ssh without -t has no terminal, which _prompt
+        # refuses) keeps everything but the single trailing newline `echo`
+        # and here-strings add -- a password may legitimately end in spaces.
+        prompt = _prompt
+        if args.stdin:
+            value = sys.stdin.read()
+            value = value[:-1] if value.endswith("\n") else value
+            prompt = lambda _name, _description: value  # noqa: E731
+        return commands.set_secret(
+            args.name, args.secret, paths=paths, runner=runner, prompt=prompt
+        )
 
     if args.command == "list":
         for app in commands.list_apps(paths=paths, runner=runner, fetch=args.fetch):

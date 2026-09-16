@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from npd import settings
-from npd.config import AppConfig, ConfigError, parse_config
+from npd.config import RESERVED_ENV_KEYS, AppConfig, ConfigError, parse_config
 from npd.gitrepo import clone, head_commit, pull_ff_only, remote_url, repo_url
 from npd.health import wait_healthy
 from npd.paths import ARTIFACT_KINDS, Paths
@@ -507,6 +507,53 @@ def diff(name: str | None, *, paths: Paths, runner: Runner) -> int:
             )
     if not any_changes:
         print("no changes")
+    return 0
+
+
+# An EnvironmentFile= key: what the shell and systemd both accept as a name.
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def set_secret(
+    name: str, secret: str, *, paths: Paths, runner: Runner, prompt: Prompt
+) -> int:
+    """Store one secret value for an app, whether or not the app exists yet.
+
+    Storing it ahead of the commit that declares it is the point: a deploy
+    triggered from CI cannot prompt, so a newly declared secret would
+    otherwise fail that deploy (see cli._prompt). It is also how a value is
+    rotated, which is why an app already loading secrets is restarted."""
+    if not _ENV_NAME.fullmatch(secret):
+        raise ValueError(
+            f"{secret!r} is not a valid environment variable name: letters, "
+            "digits and underscores only, and not starting with a digit"
+        )
+    if secret in RESERVED_ENV_KEYS:
+        raise ValueError(
+            f"{secret} is set by npd in the generated unit and cannot be a secret"
+        )
+
+    value = prompt(secret, f"value for {name}")
+    if "\n" in value:
+        # One KEY=VALUE per line is all an EnvironmentFile can express: the
+        # value would come back truncated, and whatever followed the newline
+        # would be read as another variable entirely.
+        raise ValueError(
+            f"the value for {secret} contains a newline, which an "
+            "EnvironmentFile cannot represent"
+        )
+
+    env_file = paths.env_file(name)
+    merge_secrets(env_file, {secret: value})
+    print(f"{name}: wrote {secret} to {env_file}", flush=True)
+
+    # Restart only when the running unit actually loads the env file. Before
+    # the app declares the secret its unit has no EnvironmentFile= line, so a
+    # restart would do nothing and claim otherwise.
+    unit = paths.systemd_unit_file(name)
+    if unit.exists() and "EnvironmentFile=" in unit.read_text():
+        return restart(name, paths=paths, runner=runner)
+    print(f"{name}: will be used from the next deploy", flush=True)
     return 0
 
 

@@ -169,6 +169,12 @@ which the unit loads with `EnvironmentFile=`. Adding a secret to a repo means
 the next `npd update` prompts for it — you do not have to remember to go and
 edit a file on the server.
 
+`npd secret set <app> <NAME>` stores a value without waiting to be asked; with
+`--stdin` it reads the value from a pipe, for `ssh server npd secret set …`.
+Use it *before* pushing the commit that declares the secret — a deploy triggered
+from CI has no terminal to prompt at, so it would otherwise fail — and to
+rotate a value later, which restarts the app if it is already loading secrets.
+
 Locally, `npd dev` reads the same names from a gitignored `.env` in the repo
 root and tells you which are missing before it starts anything.
 
@@ -214,6 +220,8 @@ npd list [--fetch]            app, port, route, status, commit
 npd diff [<name>]             show what would change; writes nothing
 npd restart <name>
 npd logs <name> [-f]          journalctl for the app
+npd secret set <name> <NAME>  prompt for one secret value and store it
+                              --stdin reads it from a pipe instead
 npd remove <name> [--purge]   remove generated config; --purge also deletes
                               the clone and secrets, after confirmation
 
@@ -294,9 +302,10 @@ $ gh secret set NPD_DEPLOY_KEY -R <you>/<repo> < ~/.ssh/npd_deploy
 ```
 
 Pushes to other branches show up as skipped runs. `workflow_dispatch` adds a
-"Run workflow" button for redeploying by hand. A push that declares a new
-`[secrets]` entry fails with a message asking you to run `npd update <app>` by
-hand once, since there is nobody to type it in.
+"Run workflow" button for redeploying by hand. Before pushing a commit that declares a new `[secrets]` entry, run
+`npd secret set <app> <NAME>` on the server — a deploy has no terminal to
+prompt at, so otherwise that first push fails and asks you to run
+`npd update <app>` by hand once.
 
 ## When things go wrong
 

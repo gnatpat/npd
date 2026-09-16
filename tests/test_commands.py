@@ -4,9 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from npd.commands import install, status_of, update
+from npd.commands import install, set_secret, status_of, update
 from npd.paths import MANAGED_HEADER, Paths
 from npd.runner import RecordingRunner
+from npd.secrets import read_env_file
 from npd.static import published_commit
 
 POKEMON_TOML = """
@@ -796,3 +797,68 @@ def test_tail_journal_passes_quiet_flag(monkeypatch):
     _tail_journal("pokemon")
     assert len(calls) == 1
     assert "-q" in calls[0]
+
+
+def test_secret_set_writes_the_value_before_the_app_exists(tmp_path, capsys):
+    # The point of the command: get a value onto the box BEFORE the commit
+    # that declares it, so the deploy that introduces it does not fail.
+    paths = Paths.under(tmp_path)
+    runner = RecordingRunner()
+    assert (
+        set_secret(
+            "crochet", "API_TOKEN", paths=paths, runner=runner, prompt=answer("t0ken")
+        )
+        == 0
+    )
+    assert read_env_file(paths.env_file("crochet")) == {"API_TOKEN": "t0ken"}
+    assert paths.env_file("crochet").stat().st_mode & 0o777 == 0o600
+    assert not runner.ran("systemctl restart")
+    assert "next deploy" in capsys.readouterr().out
+
+
+def test_secret_set_keeps_the_other_secrets(tmp_path):
+    paths = Paths.under(tmp_path)
+    runner = RecordingRunner()
+    set_secret("crochet", "ONE", paths=paths, runner=runner, prompt=answer("1"))
+    set_secret("crochet", "TWO", paths=paths, runner=runner, prompt=answer("2"))
+    assert read_env_file(paths.env_file("crochet")) == {"ONE": "1", "TWO": "2"}
+
+
+def test_secret_set_restarts_an_app_whose_unit_already_loads_secrets(tmp_path):
+    # Rotation: pokemon declares a secret, so its unit has EnvironmentFile= and
+    # a restart is what makes the new value take effect.
+    paths = Paths.under(tmp_path)
+    make_repo(paths, "pokemon", POKEMON_TOML)
+    install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
+    runner = RecordingRunner()
+    set_secret(
+        "pokemon",
+        "COLLECTION_PASSWORD",
+        paths=paths,
+        runner=runner,
+        prompt=answer("rotated"),
+    )
+    assert read_env_file(paths.env_file("pokemon"))["COLLECTION_PASSWORD"] == "rotated"
+    assert runner.ran("systemctl restart")
+
+
+def test_secret_set_rejects_a_name_the_generated_unit_controls(tmp_path):
+    paths = Paths.under(tmp_path)
+    for reserved in ("PORT", "PATH"):
+        with pytest.raises(ValueError, match=reserved):
+            set_secret(
+                "crochet",
+                reserved,
+                paths=paths,
+                runner=RecordingRunner(),
+                prompt=answer(),
+            )
+
+
+def test_secret_set_rejects_a_name_that_is_not_an_environment_variable(tmp_path):
+    paths = Paths.under(tmp_path)
+    for bad in ("api-token", "1TOKEN", "API TOKEN", "API=TOKEN", ""):
+        with pytest.raises(ValueError, match="environment variable"):
+            set_secret(
+                "crochet", bad, paths=paths, runner=RecordingRunner(), prompt=answer()
+            )

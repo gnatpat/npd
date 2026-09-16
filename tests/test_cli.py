@@ -346,3 +346,54 @@ def test_a_secret_prompt_with_no_terminal_fails_cleanly(monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     with pytest.raises(ValueError, match="COLLECTION_PASSWORD.*no terminal"):
         _prompt("COLLECTION_PASSWORD", "password for the collection")
+
+
+def test_secret_set_is_a_locked_command(tmp_path, monkeypatch):
+    """Writing a secret and restarting must not interleave with a deploy."""
+    from npd.cli import _LOCKED_COMMANDS, main
+
+    assert "secret" in _LOCKED_COMMANDS
+    called = []
+    monkeypatch.setattr(
+        "npd.cli.commands.set_secret", lambda *a, **k: called.append(a) or 0
+    )
+    assert main(["--root", str(tmp_path), "secret", "set", "crochet", "API_TOKEN"]) == 0
+    assert called == [("crochet", "API_TOKEN")]
+
+
+def test_secret_set_can_read_the_value_from_stdin(tmp_path, monkeypatch):
+    """So `printf '%s' "$v" | ssh server npd secret set app NAME --stdin` works:
+    ssh without -t has no terminal, which the interactive prompt refuses."""
+    import io
+
+    from npd.cli import main
+    from npd.paths import Paths
+    from npd.secrets import read_env_file
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("sw0rdfish\n"))
+    assert (
+        main(["--root", str(tmp_path), "secret", "set", "crochet", "API_TOKEN", "--stdin"])
+        == 0
+    )
+    # Exactly one trailing newline removed (echo adds one); nothing else touched.
+    assert read_env_file(Paths.under(tmp_path).env_file("crochet")) == {
+        "API_TOKEN": "sw0rdfish"
+    }
+
+
+def test_secret_set_refuses_a_value_containing_a_newline(tmp_path, monkeypatch, capsys):
+    """systemd's EnvironmentFile is one KEY=VALUE per line: a newline inside a
+    value silently truncates it on read-back, and anything after the newline
+    would be parsed as another variable."""
+    import io
+
+    from npd.cli import main
+    from npd.paths import Paths
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("innocent\nINJECTED=1\n"))
+    assert (
+        main(["--root", str(tmp_path), "secret", "set", "crochet", "TOKEN", "--stdin"])
+        == 1
+    )
+    assert "newline" in capsys.readouterr().err
+    assert not Paths.under(tmp_path).env_file("crochet").exists()

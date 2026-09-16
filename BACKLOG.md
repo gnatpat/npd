@@ -34,9 +34,6 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
   uv and Pythons system-wide (`/usr/local`, `UV_PYTHON_INSTALL_DIR`) so there
   is nothing in `/home` to expose. Check what each app writes besides its
   clone (pokemon's `collection.db` is in the clone, so that part is fine).
-- **A command to change a secret.** Rotating one today means hand-editing
-  `/etc/npd/env/<app>.env` and restarting; something like
-  `npd secret set <app> <NAME>` could prompt, write 0600, and restart.
 - **Automate per-app deploy setup** once it has been done by hand a few times:
   something that writes `.github/workflows/deploy.yml` and runs
   `gh secret set NPD_DEPLOY_KEY`, so a new repo is one command.
