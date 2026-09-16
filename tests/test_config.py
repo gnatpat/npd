@@ -208,11 +208,17 @@ def test_static_app_with_no_build_section_is_rejected():
         )
 
 
-def test_nginx_path_root_is_rejected():
-    with pytest.raises(ConfigError, match="may not be"):
-        parse_config(
-            '[service]\nstart = "run"\n[nginx]\npath = "/"\n', repo_name="x"
-        )
+def test_a_static_app_may_serve_the_site_root():
+    c = parse_config(
+        '[app]\ntype = "static"\n[build]\noutput = "out"\n[nginx]\npath = "/"\n',
+        repo_name="site",
+    )
+    assert c.nginx.path == "/"
+
+
+def test_a_service_may_serve_the_site_root():
+    c = parse_config('[service]\nstart = "run"\n[nginx]\npath = "/"\n', repo_name="x")
+    assert c.nginx.path == "/"
 
 
 def test_static_app_without_trailing_slash_on_path_is_rejected():

@@ -55,9 +55,10 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
 - **Move the main site generator (`gnatpat/site`) onto npd.** Today it deploys
   via GitHub Actions → push to `/site.git` → `post-receive` → `deploy.sh`, and
   rebuilds non-atomically by `rmtree`-ing `/public_html/www`. Needed:
-  - npd: allow one static app at `nginx.path = "/"` (currently refused), then
+  - npd: done — `nginx.path = "/"` is supported. The migration still has to
     delete the hand-written `location /` (and `@manual`) from
-    `sites-available/natpat.net`. `error_page 404 /404/` can stay.
+    `sites-available/natpat.net` in the same window, since nginx refuses two
+    `location /` blocks. `error_page 404 /404/` can stay.
   - site: get the 68 MB of Unity games (`/resources/unity-games`) and `/static`
     (swfs, favicon) into the repo, or accept them as hand-managed inputs.
   - site: replace `requirements.txt` + `/env` with

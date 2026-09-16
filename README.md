@@ -178,6 +178,14 @@ rotate a value later, which restarts the app if it is already loading secrets.
 Locally, `npd dev` reads the same names from a gitignored `.env` in the repo
 root and tells you which are missing before it starts anything.
 
+### Serving the site root
+
+`path = "/"` is allowed, for the app that serves the whole site. Only one app
+can have it, and the server block must not also contain a hand-written
+`location /` — nginx rejects the duplicate, which `npd` reports as a failed
+`nginx -t` and rolls back. Routes belonging to other apps are more specific, so
+they keep winning over `/`, and `error_page` targets are served by it.
+
 ### Sandboxing
 
 `sandbox = true` adds a fixed set of systemd hardening lines to the unit. The

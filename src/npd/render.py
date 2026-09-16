@@ -55,9 +55,11 @@ def render_nginx_snippet(config: AppConfig, port: int | None, paths: Paths) -> s
     lines = [MANAGED_HEADER]
 
     # nginx treats /x and /x/ as different locations; a trailing-slash route
-    # needs an explicit redirect or the bare URL 404s.
-    if path.endswith("/"):
-        bare = path.rstrip("/")
+    # needs an explicit redirect or the bare URL 404s. The site root is the
+    # exception: there is no bare form of "/" to redirect from, and
+    # `location =  { ... }` would not parse.
+    bare = path.rstrip("/")
+    if path.endswith("/") and bare:
         lines.append(f"location = {bare} {{ return 301 {path}; }}")
 
     lines.append(f"location {path} {{")

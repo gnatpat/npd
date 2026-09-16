@@ -76,3 +76,21 @@ def test_snippet_ends_with_exactly_one_newline():
     out = render('[service]\nstart = "run"\n[nginx]\npath = "/blog"\n')
     assert out.endswith("}\n")
     assert not out.endswith("\n\n")
+
+
+ROOT_STATIC = '[app]\nname = "site"\ntype = "static"\n[build]\noutput = "out"\n[nginx]\npath = "/"\n'
+
+
+def test_a_root_route_has_no_bare_redirect():
+    """Every other route gets `location = /x { return 301 /x/; }`. At "/" the
+    trimmed form is empty, and `location =  { ... }` will not parse."""
+    out = render(ROOT_STATIC, port=None)
+    assert "return 301" not in out
+    assert "location =" not in out
+
+
+def test_a_root_static_app_serves_the_published_directory():
+    out = render(ROOT_STATIC, port=None)
+    assert "location / {" in out
+    assert "alias /srv/test/var/www/npd/site/;" in out
+    assert "try_files $uri $uri/ =404;" in out

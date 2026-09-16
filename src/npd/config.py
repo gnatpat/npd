@@ -297,11 +297,6 @@ def _parse_nginx(raw: dict[str, Any] | None, app_type: str) -> NginxConfig | Non
     path = str(raw.get("path", ""))
     if not path.startswith("/"):
         raise ConfigError(f"nginx.path must start with '/', got {path!r}")
-    if path == "/":
-        raise ConfigError(
-            'nginx.path may not be "/" — the site root is served by the static site, '
-            "not by a managed app"
-        )
     if not NGINX_PATH_PATTERN.match(path):
         raise ConfigError(
             f"nginx.path {path!r} contains invalid characters; "
