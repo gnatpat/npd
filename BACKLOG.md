@@ -40,6 +40,15 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
 - **`[dev.env]` overrides.** Blog's dev start is
   `env INSTANCE_PATH=$PWD/instance uv run flask ...` only because `[env]`
   can't differ between production and dev.
+- **A streaming option for SSE apps.** Something like `nginx.streaming = true`
+  that renders `proxy_buffering off;` and a longer `proxy_read_timeout` into
+  the location (and makes `npd dev`'s proxy flush instead of buffering). Today
+  every streaming app works around it itself: `exercise` (coach) sends
+  `X-Accel-Buffering: no` and a 15 s SSE keepalive comment so nginx neither
+  buffers the reply nor hits the default 60 s read timeout mid-turn
+  (`src/coach/app.py`, `SSE_HEADERS` / `KEEPALIVE_SECONDS`). With the option,
+  those become unnecessary (keep the keepalive anyway if any other proxy sits
+  in front).
 - **Quieter npm builds.** Consider recommending `npm ci --no-audit --no-fund`
   in the README's examples.
 
