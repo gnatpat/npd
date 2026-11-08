@@ -327,6 +327,12 @@ prompt at, so otherwise that first push fails and asks you to run
   keeps serving, and `npd` tells you the working tree is now ahead of what is
   running. The next `npd update` notices and redeploys — it will not tell you
   everything is fine when it is not.
+- **A build cannot take the box down with it.** Build steps run at a low CPU
+  priority, are the first thing the kernel kills if memory runs out, and are
+  killed (with everything they started) if one runs longer than
+  `NPD_BUILD_TIMEOUT` — which then fails like any other build. On a small
+  server, also give it swap: a frontend build can briefly need a few hundred
+  MB on top of the running apps.
 - **Two commands never interleave.** `install`, `update` and `remove` take a
   lock; a second one prints that it is waiting and runs when the first is done.
 - **A failed health check** leaves the service running, prints the last lines
@@ -354,6 +360,7 @@ one can be overridden:
 | `NPD_ETC_SYSTEMD_DIR` | `/etc/npd/systemd` |
 | `NPD_NGINX_SNIPPET_DIR` | `/etc/nginx/npd.d` |
 | `NPD_STATIC_DIR` | `/var/www/npd` |
+| `NPD_BUILD_TIMEOUT` | `600` seconds per build step |
 
 `--root <dir>` relocates the entire layout under one directory, which is how
 the tests run and a convenient way to see what `npd` would do without letting

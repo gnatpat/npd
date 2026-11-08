@@ -49,6 +49,19 @@ Rough, unordered-within-sections. Found while migrating natpat.net onto npd
   (`src/coach/app.py`, `SSE_HEADERS` / `KEEPALIVE_SECONDS`). With the option,
   those become unnecessary (keep the keepalive anyway if any other proxy sits
   in front).
+- **A hard memory cap for build steps on cgroup v2 boxes.** `build.run_step`
+  lowers a step's priority, makes it the OOM killer's first pick and times it
+  out, but cannot cap its memory: natpat.net (Ubuntu 20.04) is cgroup v1, where
+  `systemd-run --user --scope -p MemoryMax=...` runs but is not enforced. On a
+  cgroup v2 box with the memory controller delegated to the user manager
+  (Ubuntu 22.04+), wrapping each step in that command would make a greedy
+  build fail on its own instead of pushing the apps into swap. Detect support
+  rather than assume it, since an unenforced limit looks like a working one.
+- **Measured build memory (pokemon, November 2026):** `npm install` with
+  packages already present ~100 MB, `tsc -b` ~390 MB, `vite build` ~215 MB.
+  Type-checking is the heaviest step and not needed to produce the bundle;
+  an app could run it in CI instead (a check, not a deploy step) and build
+  with `vite build` alone.
 - **Quieter npm builds.** Consider recommending `npm ci --no-audit --no-fund`
   in the README's examples.
 

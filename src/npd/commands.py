@@ -2,6 +2,7 @@ import difflib
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from npd import settings
+from npd.build import run_step
 from npd.config import RESERVED_ENV_KEYS, AppConfig, ConfigError, parse_config
 from npd.gitrepo import clone, head_commit, pull_ff_only, remote_url, repo_url
 from npd.health import wait_healthy
@@ -81,11 +83,24 @@ def _run_build(config: AppConfig, repo: Path) -> None:
         # this tool to consume -- going through Runner would capture it
         # (RealRunner sets capture_output=True) and throw it away, leaving
         # silence followed by a bare "build step failed" with no diagnosis.
-        # Use subprocess.call directly, as logs(), _deploy's journal tail,
-        # and run_dev's build loop all do, so the lines reach the terminal,
-        # and raise CalledProcessError ourselves so the existing failure
-        # handling below still fires.
-        returncode = subprocess.call(shlex.split(step), cwd=workdir)
+        # run_step streams straight to the terminal, as logs(), _deploy's
+        # journal tail and run_dev's build loop do, and also keeps the step
+        # from swamping a small box (see build.py). Raise CalledProcessError
+        # ourselves so the existing failure handling below still fires.
+        try:
+            returncode = run_step(
+                shlex.split(step), cwd=workdir, timeout=settings.BUILD_TIMEOUT
+            )
+        except subprocess.TimeoutExpired:
+            print(
+                f"{config.name}: build step did not finish within "
+                f"{settings.BUILD_TIMEOUT:g}s and was killed: {step}\n"
+                f"  nothing was deployed and the running service is unchanged.\n"
+                f"  if the box is short of memory, add swap; if the build is just\n"
+                f"  slow, raise the limit with NPD_BUILD_TIMEOUT (seconds).",
+                file=sys.stderr,
+            )
+            raise subprocess.CalledProcessError(-signal.SIGKILL, step) from None
         if returncode != 0:
             print(
                 f"{config.name}: build step failed: {step}\n"

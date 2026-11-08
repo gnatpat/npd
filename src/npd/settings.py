@@ -39,3 +39,9 @@ ETC_ENV_DIR = Path(os.environ.get("NPD_ETC_ENV_DIR", "/etc/npd/env"))
 ETC_SYSTEMD_DIR = Path(os.environ.get("NPD_ETC_SYSTEMD_DIR", "/etc/npd/systemd"))
 NGINX_SNIPPET_DIR = Path(os.environ.get("NPD_NGINX_SNIPPET_DIR", "/etc/nginx/npd.d"))
 STATIC_DIR = Path(os.environ.get("NPD_STATIC_DIR", "/var/www/npd"))
+
+# How long one build step may run, in seconds, before it is killed and the
+# deploy fails. Generous for a normal build (a frontend takes seconds); its job
+# is to end a build that has pushed a small box into thrashing, which otherwise
+# never finishes and keeps the box unusable until someone kills it by hand.
+BUILD_TIMEOUT = float(os.environ.get("NPD_BUILD_TIMEOUT", "600"))

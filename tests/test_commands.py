@@ -229,13 +229,36 @@ def test_build_steps_stream_to_the_terminal_instead_of_going_through_runner(
 
     calls = []
     monkeypatch.setattr(
-        "npd.commands.subprocess.call",
+        "npd.commands.run_step",
         lambda argv, **kw: calls.append(argv) or 0,
     )
     runner = RecordingRunner()
     assert install("pokemon", paths=paths, runner=runner, prompt=answer()) == 0
     assert calls == [["echo", "hi"]]
     assert not runner.ran("echo hi")
+
+
+def test_a_build_step_that_times_out_fails_the_deploy_and_writes_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    """A build that never finishes (a small box thrashing out of memory)
+    must end as an ordinary failed deploy: the running service untouched,
+    and a message that says it was the time limit, not the step's own exit."""
+    paths = Paths.under(tmp_path)
+    toml = POKEMON_TOML + '\n[build]\nsteps = ["npm install"]\n'
+    make_repo(paths, "pokemon", toml)
+
+    def times_out(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr("npd.commands.run_step", times_out)
+    with pytest.raises(subprocess.CalledProcessError):
+        install("pokemon", paths=paths, runner=RecordingRunner(), prompt=answer())
+    assert not paths.systemd_unit_file("pokemon").exists()
+    err = capsys.readouterr().err
+    assert "npm install" in err
+    assert "did not finish within" in err
+    assert "NPD_BUILD_TIMEOUT" in err
 
 
 def test_a_failing_build_step_raises_a_called_process_error(tmp_path):
