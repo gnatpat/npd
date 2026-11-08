@@ -37,6 +37,8 @@ def test_parser_accepts_every_documented_command():
         ["remove", "pokemon", "--purge"],
         ["dev"],
         ["dev", "--prefix", "--build", "--port", "9000"],
+        ["check"],
+        ["check", "--github-outputs"],
     ):
         assert parser.parse_args(argv) is not None
 

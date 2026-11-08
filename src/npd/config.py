@@ -75,6 +75,7 @@ _KNOWN_KEYS: dict[str, tuple[str, ...] | None] = {
     "service": ("start", "workdir", "health_path", "port", "sandbox"),
     "nginx": ("path", "strip_prefix", "client_max_body_size"),
     "dev": ("start",),
+    "check": ("steps", "workdir", "tools"),
     "env": None,
     "secrets": None,
 }
@@ -128,6 +129,21 @@ class BuildConfig:
     output: str = ""
 
 
+# Tools a [check] can ask GitHub to install, each set up by its own action
+# in .github/workflows/deploy.yml (a test keeps the two in step).
+SUPPORTED_TOOLS = ("node", "python", "uv")
+# A version is handed to a setup action through a `name=value` step output,
+# so it must be one plain token: "24", "3.12", "latest", "0.5.x".
+TOOL_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.*+-]*$")
+
+
+@dataclass(frozen=True)
+class CheckConfig:
+    steps: tuple[str, ...]
+    workdir: str = ""
+    tools: dict[str, str] = field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class ServiceConfig:
     start: str
@@ -152,6 +168,7 @@ class AppConfig:
     service: ServiceConfig | None = None
     nginx: NginxConfig | None = None
     dev_start: str | None = None
+    check: CheckConfig | None = None
     env: dict[str, str] = field(default_factory=dict)
     secrets: dict[str, str] = field(default_factory=dict)
 
@@ -230,6 +247,7 @@ def parse_config(text: str, *, repo_name: str) -> AppConfig:
         service=service,
         nginx=nginx,
         dev_start=dev_start,
+        check=_parse_check(_table(raw, "check")),
         env=env,
         secrets=secrets,
     )
@@ -246,6 +264,43 @@ def _parse_build(raw: dict[str, Any] | None) -> BuildConfig | None:
         steps=steps,
         workdir=str(raw.get("workdir", "")),
         output=str(raw.get("output", "")),
+    )
+
+
+def _parse_check(raw: dict[str, Any] | None) -> CheckConfig | None:
+    if not raw:
+        return None
+    steps_raw = raw.get("steps")
+    if steps_raw is None:
+        raise ConfigError(
+            "check.steps is required; a [check] with nothing to run would pass every push"
+        )
+    if not isinstance(steps_raw, list) or not all(isinstance(s, str) for s in steps_raw):
+        raise ConfigError(f"check.steps must be a list of strings, got {steps_raw!r}")
+    if not steps_raw:
+        raise ConfigError(
+            "check.steps is empty; a [check] with nothing to run would pass every push"
+        )
+    tools_raw = raw.get("tools", {})
+    if not isinstance(tools_raw, dict):
+        raise ConfigError(
+            f"check.tools must be a table like {{ node = \"24\" }}, got {type(tools_raw).__name__}"
+        )
+    tools: dict[str, str] = {}
+    for tool, version in tools_raw.items():
+        if tool not in SUPPORTED_TOOLS:
+            raise ConfigError(
+                f"check.tools has {tool!r}, which the GitHub check job cannot install; "
+                f"supported: {', '.join(SUPPORTED_TOOLS)}"
+            )
+        if not isinstance(version, str) or not TOOL_VERSION_PATTERN.match(version):
+            raise ConfigError(
+                f"check.tools.{tool} must be a version string such as \"24\" or "
+                f"\"latest\", got {version!r}"
+            )
+        tools[tool] = version
+    return CheckConfig(
+        steps=tuple(steps_raw), workdir=str(raw.get("workdir", "")), tools=tools
     )
 
 

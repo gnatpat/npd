@@ -535,3 +535,64 @@ def test_an_unknown_table_is_rejected():
 def test_an_unknown_key_inside_a_table_is_rejected():
     with pytest.raises(ConfigError, match=r"service\.healthpath"):
         parse_config('[service]\nstart = "run"\nhealthpath = "/"\n', repo_name="x")
+
+
+CHECK = """
+[check]
+workdir = "pokemon-cards-app"
+steps = ["npm ci", "npx tsc -b"]
+tools = { node = "24" }
+"""
+
+
+def test_parses_a_check_section():
+    config = parse_config(SERVICE_TOML + CHECK, repo_name="pokemon")
+    assert config.check is not None
+    assert config.check.steps == ("npm ci", "npx tsc -b")
+    assert config.check.workdir == "pokemon-cards-app"
+    assert config.check.tools == {"node": "24"}
+
+
+def test_check_is_none_when_absent():
+    assert parse_config(SERVICE_TOML, repo_name="pokemon").check is None
+
+
+def test_check_tools_default_to_none_needed():
+    toml = SERVICE_TOML + '\n[check]\nsteps = ["sh -c true"]\n'
+    assert parse_config(toml, repo_name="pokemon").check.tools == {}
+
+
+def test_check_requires_steps():
+    toml = SERVICE_TOML + '\n[check]\ntools = { node = "24" }\n'
+    with pytest.raises(ConfigError, match="check.steps"):
+        parse_config(toml, repo_name="pokemon")
+
+
+def test_check_steps_must_be_a_list_of_strings():
+    toml = SERVICE_TOML + '\n[check]\nsteps = "npx tsc -b"\n'
+    with pytest.raises(ConfigError, match="check.steps must be a list"):
+        parse_config(toml, repo_name="pokemon")
+
+
+def test_an_unsupported_check_tool_is_rejected_naming_the_supported_ones():
+    toml = SERVICE_TOML + CHECK.replace('node = "24"', 'deno = "2"')
+    with pytest.raises(ConfigError, match="deno.*node, python, uv"):
+        parse_config(toml, repo_name="pokemon")
+
+
+def test_a_check_tool_version_must_be_a_plain_version_string():
+    """The version is handed to a GitHub setup action through a step
+    output, one `name=value` line each; a newline or space would break or
+    smuggle extra outputs."""
+    toml = SERVICE_TOML + CHECK.replace('node = "24"', 'node = "24\\nuv=1"')
+    with pytest.raises(ConfigError, match="check.tools.node"):
+        parse_config(toml, repo_name="pokemon")
+    toml = SERVICE_TOML + CHECK.replace('node = "24"', "node = 24")
+    with pytest.raises(ConfigError, match="check.tools.node"):
+        parse_config(toml, repo_name="pokemon")
+
+
+def test_an_unknown_check_key_is_rejected():
+    toml = SERVICE_TOML + CHECK.replace("[check]", "[check]\nstep = []")
+    with pytest.raises(ConfigError, match="unknown key check.step"):
+        parse_config(toml, repo_name="pokemon")

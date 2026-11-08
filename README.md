@@ -130,6 +130,11 @@ client_max_body_size = "10m"
 [dev]                       # optional; overrides [service] for `npd dev`
 start = "uv run uvicorn main:app --reload --port $PORT"
 
+[check]                     # optional; see "Checks" below
+workdir = "frontend"
+steps = ["npm ci", "npx tsc -b"]
+tools = { node = "24" }     # what GitHub must install: node, python, uv
+
 [env]                       # non-secret, committed
 LOG_LEVEL = "info"
 
@@ -234,6 +239,7 @@ npd remove <name> [--purge]   remove generated config; --purge also deletes
                               the clone and secrets, after confirmation
 
 npd dev [--prefix] [--build] [--port N]     run this repo locally
+npd check [--github-outputs]                run this repo's [check] steps
 ```
 
 A bare name resolves to `git@github.com:<NPD_GITHUB_USER>/<name>.git`. Full
@@ -314,6 +320,28 @@ Pushes to other branches show up as skipped runs. `workflow_dispatch` adds a
 `npd secret set <app> <NAME>` on the server — a deploy has no terminal to
 prompt at, so otherwise that first push fails and asks you to run
 `npd update <app>` by hand once.
+
+## Checks
+
+`[check]` lists commands that must pass before an app deploys: type checks,
+tests, lints. They run where the code is, never on the server:
+
+- **`npd check`** runs them in your checkout, in order, stopping at the first
+  failure.
+- **On push**, the deploy workflow runs them on GitHub first, and only asks
+  the server to deploy if they pass. A failed check shows up as a failed run
+  and the server is never contacted.
+
+Put heavy work that is not needed to produce the app here rather than in
+`[build]`, which runs on the server next to every other app. Type-checking a
+frontend is the usual example: `vite build` does not need `tsc`, and `tsc` can
+take more memory than the bundle itself.
+
+GitHub's machine starts with none of your tools, so `tools` names each one and
+its version, and the workflow installs exactly those (`actions/setup-node`,
+`actions/setup-python`, `astral-sh/setup-uv`). Nothing is guessed from the
+repository's files. A step that needs a tool you did not list fails on GitHub
+with "command not found".
 
 ## When things go wrong
 

@@ -1,9 +1,12 @@
-# Reusable workflow: redeploy one npd app after a push to its default branch.
-# Called from each app's repository; see "Deploy on push" in the README.
+# Reusable workflow: check, then redeploy, one npd app after a push to its
+# default branch. Called from each app's repository; see "Deploy on push" and
+# "Checks" in the README.
 #
 # Nothing from the repository is sent to the server. The server's deploy key
 # is locked to `npd-deploy`, which only runs `npd update <app>`, and that
-# pulls the app from GitHub itself.
+# pulls the app from GitHub itself. The check job only decides whether that
+# happens: it runs the app's [check] steps here, and a failure stops the
+# deploy.
 name: npd deploy
 
 on:
@@ -30,7 +33,43 @@ on:
         required: true
 
 jobs:
+  check:
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install npd
+        # The commit of this workflow file when GitHub provides it (it is
+        # sometimes empty in reusable workflows), else main.
+        run: pipx install "git+https://github.com/gnatpat/npd@${{ github.job_workflow_sha || 'main' }}"
+      - name: Read the tools the checks need
+        id: tools
+        run: npd check --github-outputs >> "$GITHUB_OUTPUT"
+      # One setup step per entry in config.SUPPORTED_TOOLS; a test keeps
+      # this list in step with it.
+      - if: steps.tools.outputs.node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.tools.outputs.node }}
+      - if: steps.tools.outputs.python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ steps.tools.outputs.python }}
+      - if: steps.tools.outputs.uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ steps.tools.outputs.uv }}
+      - name: npd check
+        if: steps.tools.outputs.check == 'true'
+        run: npd check
+
   deploy:
+    needs: check
     # The github context is the caller's. Only its default branch deploys,
     # matching the branch npd's clone tracks.
     if: >-

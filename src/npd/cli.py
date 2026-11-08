@@ -6,6 +6,7 @@ from pathlib import Path
 
 from npd import commands
 from npd.config import ConfigError, parse_config
+from npd.check import github_outputs, run_checks
 from npd.dev import DEFAULT_DEV_PORT, run_dev
 from npd.gitrepo import DirtyRepo
 from npd.lock import exclusive
@@ -76,6 +77,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prefix", action="store_true", help="serve under the nginx route")
     p.add_argument("--build", action="store_true", help="run build steps first")
     p.add_argument("--port", type=int, default=DEFAULT_DEV_PORT)
+
+    p = sub.add_parser("check", help="run this repo's [check] steps")
+    p.add_argument(
+        "--github-outputs",
+        action="store_true",
+        help="print the tools the checks need, as GitHub step outputs, and run nothing",
+    )
 
     return parser
 
@@ -216,6 +224,14 @@ def _dispatch(args: argparse.Namespace, paths: Paths) -> int:
             prefix=args.prefix,
             runner=runner,
         )
+
+    if args.command == "check":
+        repo = Path.cwd()
+        config = parse_config((repo / "npd.toml").read_text(), repo_name=repo.name)
+        if args.github_outputs:
+            print(github_outputs(config), end="")
+            return 0
+        return run_checks(config, repo)
 
     return 2
 
